@@ -24,10 +24,15 @@ from pathlib import Path
 from functools import lru_cache
 
 # ── 靜音所有雜訊 log（sentence_transformers / huggingface / httpx）──
-logging.disable(logging.WARNING)
 warnings.filterwarnings("ignore")
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-os.environ["TQDM_DISABLE"] = "1"   # 關閉 tqdm progress bar（Batches:...）
+
+# sentence-transformers 用 logger level 決定要不要顯示 "Batches:" 進度條
+# （see SentenceTransformer.py line 309: show_progress_bar 預設取決於
+#  logger.getEffectiveLevel() == INFO）→ 提高到 ERROR 才能關掉
+logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
+logging.getLogger("sentence_transformers.SentenceTransformer").setLevel(logging.ERROR)
+logging.disable(logging.WARNING)
 
 import ollama
 from flashrank import Ranker, RerankRequest
@@ -310,11 +315,10 @@ def main():
                 messages, query, fetch_k, keep_k, stream, model
             )
         except Exception as e:
-            err = str(e)
-            if "502" in err or "context" in err.lower():
-                print(f"\n[ERROR] 502 / context 過長，試試 /clear 後重問\n")
-            else:
-                print(f"\n[ERROR] {e}\n")
+            import traceback
+            print(f"\n[ERROR] {type(e).__name__}: {e}\n")
+            traceback.print_exc()
+            print()
 
 
 if __name__ == "__main__":
