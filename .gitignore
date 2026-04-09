@@ -1,0 +1,42 @@
+# ══════════════════════════════════════════
+#  個人記憶（所有內容都不進 git）
+# ══════════════════════════════════════════
+Personal_Brain_DB/10_Profile/
+Personal_Brain_DB/20_AI_Chats/
+Personal_Brain_DB/30_Journal/
+Personal_Brain_DB/40_Projects/
+Personal_Brain_DB/50_Knowledge/
+
+# ── 原始資料來源 ──
+gemini\ chat/
+notes/
+個人記憶開發文檔.md
+
+# ══════════════════════════════════════════
+#  系統生成／大型二進位（不 commit）
+# ══════════════════════════════════════════
+
+# 向量資料庫
+Personal_Brain_DB/00_System/chroma_db/
+
+# FlashRank / HuggingFace 模型快取
+Personal_Brain_DB/00_System/flashrank_cache/
+
+# 自動生成的全文索引
+Personal_Brain_DB/00_System/index.json
+
+# ══════════════════════════════════════════
+#  Python 暫存
+# ══════════════════════════════════════════
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+.Python
+
+# ══════════════════════════════════════════
+#  系統雜項
+# ══════════════════════════════════════════
+.DS_Store
+.AppleDouble
+**/.DS_Store
+.claude/

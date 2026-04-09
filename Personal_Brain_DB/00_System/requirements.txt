@@ -1,0 +1,15 @@
+# Personal Brain DB 依賴
+# 安裝：/Users/chun/.virtualenvs/personal-memory/bin/pip install -r requirements.txt
+
+python-snappy>=0.7
+watchdog>=6.0
+chromadb>=1.5
+mcp>=1.0
+flashrank>=0.2
+ollama>=0.6
+
+# Embedding（sentence-transformers 2.7 + 相容版本鎖定）
+sentence-transformers==2.7.0
+transformers==4.40.0
+numpy<2          # PyTorch 2.2.x 與 NumPy 2.x 不相容
+torch==2.2.2
