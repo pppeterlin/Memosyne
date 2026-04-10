@@ -168,9 +168,18 @@ def make_prefix(fm: dict) -> str:
     tags_str = ",".join(tags[:4]) if tags else ""
     title    = fm.get("title", "")
 
+    # ── 檔名關鍵詞（filename_hint）──
+    fname_hint_raw = fm.get("filename_hint", "") or ""
+    if isinstance(fname_hint_raw, list):
+        fname_hint_str = ",".join(str(h) for h in fname_hint_raw if h)
+    else:
+        fname_hint_str = re.sub(r'[\[\]"\'\s]', '', str(fname_hint_raw))
+
     prefix = f"[{doc_type}][{date}]"
     if tags_str:
         prefix += f"[{tags_str}]"
+    if fname_hint_str:
+        prefix += f"[file:{fname_hint_str}]"
 
     # ── Enrichment 欄位（若已增強則注入）──
     if fm.get("enriched_at"):
