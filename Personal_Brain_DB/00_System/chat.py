@@ -27,6 +27,16 @@ from functools import lru_cache
 warnings.filterwarnings("ignore")
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+# ── VPN / Proxy 修正 ──────────────────────────────────────────
+# TUN 模式 VPN 下，httpx 可能把 localhost 請求也送進 proxy → 502
+# 設定 NO_PROXY 強制 bypass proxy for local Ollama
+os.environ.setdefault("OLLAMA_HOST", "http://127.0.0.1:11434")
+for _var in ("NO_PROXY", "no_proxy"):
+    _cur = os.environ.get(_var, "")
+    _bypass = "localhost,127.0.0.1,::1"
+    if _bypass not in _cur:
+        os.environ[_var] = f"{_cur},{_bypass}".lstrip(",")
+
 # sentence-transformers 用 logger level 決定要不要顯示 "Batches:" 進度條
 # （see SentenceTransformer.py line 309: show_progress_bar 預設取決於
 #  logger.getEffectiveLevel() == INFO）→ 提高到 ERROR 才能關掉
@@ -222,25 +232,40 @@ def chat_once(
 
     # think=False 是 ollama 頂層參數（不是 options 裡面）
     # 關閉 gemma4 的 thinking mode，避免 streaming 時 502
-    if stream:
-        with CatSpinner():
-            gen         = ollama.chat(model=model, messages=messages, stream=True, think=False)
-            first_chunk = next(gen, None)
-        print("\nGemma4 > ", end="", flush=True)
-        if first_chunk:
-            t = first_chunk["message"]["content"]
-            print(t, end="", flush=True)
-            full_reply += t
-        for chunk in gen:
-            t = chunk["message"]["content"]
-            print(t, end="", flush=True)
-            full_reply += t
-        print("\n")
-    else:
-        with CatSpinner():
-            resp = ollama.chat(model=model, messages=messages, stream=False, think=False)
-        full_reply = resp["message"]["content"]
-        print(f"\nGemma4 > {full_reply}\n")
+    # retry：VPN TUN 模式下 proxy 偶爾攔截 localhost → 最多重試 3 次
+    MAX_RETRY = 3
+    for attempt in range(1, MAX_RETRY + 1):
+        try:
+            if stream:
+                with CatSpinner():
+                    gen         = ollama.chat(model=model, messages=messages, stream=True, think=False)
+                    first_chunk = next(gen, None)
+                print("\nGemma4 > ", end="", flush=True)
+                if first_chunk:
+                    t = first_chunk["message"]["content"]
+                    print(t, end="", flush=True)
+                    full_reply += t
+                for chunk in gen:
+                    t = chunk["message"]["content"]
+                    print(t, end="", flush=True)
+                    full_reply += t
+                print("\n")
+            else:
+                with CatSpinner():
+                    resp = ollama.chat(model=model, messages=messages, stream=False, think=False)
+                full_reply = resp["message"]["content"]
+                print(f"\nGemma4 > {full_reply}\n")
+            break  # 成功，跳出 retry loop
+
+        except Exception as e:
+            err_str = str(e)
+            is_502  = "502" in err_str
+            if is_502 and attempt < MAX_RETRY:
+                print(f"\r⚠️  連線抖動（{attempt}/{MAX_RETRY}），重試中...", end="", flush=True)
+                time.sleep(1.5)
+                full_reply = ""   # 清空，重新開始
+                continue
+            raise  # 非 502 或已超過重試次數，往外拋
 
     # 歷史存乾淨問題（不含 context），再套滑動窗口
     messages[-1] = {"role": "user", "content": query}
@@ -315,10 +340,13 @@ def main():
                 messages, query, fetch_k, keep_k, stream, model
             )
         except Exception as e:
-            import traceback
-            print(f"\n[ERROR] {type(e).__name__}: {e}\n")
-            traceback.print_exc()
-            print()
+            err = str(e)
+            if "502" in err:
+                print(f"\n[ERROR] Ollama 連線失敗（502）。已重試 {MAX_RETRY} 次。\n"
+                      f"  可能原因：VPN TUN 模式攔截了 localhost 連線。\n"
+                      f"  建議：暫時關閉 VPN 或改用分流模式後重試。\n")
+            else:
+                print(f"\n[ERROR] {type(e).__name__}: {e}\n")
 
 
 if __name__ == "__main__":
