@@ -20,6 +20,7 @@ Personal Brain DB — LLM 語意增強（Enrichment Layer）
 
 import argparse
 import json
+import os
 import re
 import sys
 import logging
@@ -29,6 +30,15 @@ from pathlib import Path
 
 logging.disable(logging.WARNING)
 warnings.filterwarnings("ignore")
+
+# TUN 模式 VPN 下，httpx 可能把 localhost 請求也送進 proxy → 502
+# 設定 NO_PROXY 強制 bypass proxy for local Ollama
+os.environ.setdefault("OLLAMA_HOST", "http://127.0.0.1:11434")
+for _var in ("NO_PROXY", "no_proxy"):
+    _cur = os.environ.get(_var, "")
+    _bypass = "localhost,127.0.0.1,::1"
+    if _bypass not in _cur:
+        os.environ[_var] = f"{_cur},{_bypass}".lstrip(",")
 
 BASE       = Path(__file__).parent.parent
 SYSTEM_DIR = Path(__file__).parent
@@ -344,8 +354,6 @@ def enrich_all(model: str, rebuild: bool, dry_run: bool, target_file: str | None
             errors += 1
 
     print(f"\n[ENRICH] 完成：{done} 增強，{skipped} 跳過，{errors} 錯誤")
-    if done > 0 and not dry_run:
-        print("[ENRICH] 請執行 python3 vectorize.py --rebuild 重新建立向量索引")
 
 
 # ─── CLI ────────────────────────────────────────────────────
