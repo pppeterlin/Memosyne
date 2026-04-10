@@ -1,41 +1,38 @@
 #!/usr/bin/env python3
 """
-Personal Brain DB — 向量化索引
+Personal Brain DB — 向量化索引 + BM25 Hybrid Search
 
-設計原則（第一原理）
-─────────────────────
-現代 dense embedding 模型（paraphrase-multilingual-MiniLM-L12-v2）已能捕捉語義，
-不需要另外做關鍵詞提取。真正影響精準度的是：
+索引架構：
+─────────────────────────────────────────────
+1. Dense Vector（ChromaDB）
+   paraphrase-multilingual-MiniLM-L12-v2 捕捉語義相似性
+   enrichment metadata prefix 注入到每個 chunk
 
-1. Metadata 注入到 chunk 文字
-   不是把 type/date/title 存進 metadata filter 欄位，而是 prepend 到 chunk 本身：
-   "[手札][2026-02-03][寵物] 今天是小貓回家的第一天..."
-   → embedding 本身就帶有「這是什麼類型、什麼時間、什麼主題」的語義
+2. BM25 關鍵字索引（rank-bm25）
+   對「精確詞彙」查詢有優勢（地名、人名、專有名詞）
+   語料包含 enrichment 欄位（locations / period），
+   讓「雲南」查詢能找到 locations 含「雲南/大理」的記憶
 
-2. 語義切段（段落為單位，不是字數）
-   用 \\n\\n（空行）為邊界切段，保留完整想法。
-   字數硬切會把一個完整的句子/段落切斷，扭曲語義向量方向。
-
-3. 雙粒度索引
-   每個文件 = 1個「文件摘要 chunk」+ N個「段落 chunk」
-   - 摘要 chunk：捕捉整體主題（適合「這件事我有沒有記錄過？」）
-   - 段落 chunk：捕捉細節（適合「那件事的具體內容是什麼？」）
-   - 兩種都用同一個 collection，靠 chunk_type metadata 區分
+3. Hybrid 融合（RRF：Reciprocal Rank Fusion）
+   Dense top-15 + BM25 top-15 → RRF 合併 → FlashRank 精排 top-5
+   互補覆蓋語義模糊 vs 精確詞彙兩種查詢類型
 
 執行方式：
-  python3 vectorize.py              # 增量更新
-  python3 vectorize.py --rebuild    # 重建整個向量資料庫
+  python3 vectorize.py              # 增量更新（vector + bm25）
+  python3 vectorize.py --rebuild    # 重建所有索引
   python3 vectorize.py --query "深圳工作" --top 5
 """
 
 import argparse
+import pickle
 import re
 from pathlib import Path
 
-BASE        = Path(__file__).parent.parent
-CHROMA_DIR  = Path(__file__).parent / "chroma_db"
-EMBED_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
-COLLECTION  = "personal_brain"
+BASE         = Path(__file__).parent.parent
+CHROMA_DIR   = Path(__file__).parent / "chroma_db"
+BM25_PATH    = Path(__file__).parent / "bm25_index.pkl"
+EMBED_MODEL  = "paraphrase-multilingual-MiniLM-L12-v2"
+COLLECTION   = "personal_brain"
 MIN_PARA_LEN = 25   # 少於此字數的段落略過（通常是標題殘留）
 
 
@@ -306,6 +303,10 @@ def build_index(rebuild: bool = False):
     print(f"\n[VECTOR] 完成！資料庫共 {col.count()} 個 chunks")
     _print_stats(col)
 
+    # ── 同步建立 BM25 索引 ──
+    print("\n[BM25]  建立關鍵字索引...")
+    build_bm25_index(all_chunks)
+
 
 def _print_stats(col):
     """印出各 type 的文件數統計"""
@@ -317,15 +318,148 @@ def _print_stats(col):
     print(f"  文件類型：{dict(by_type)}")
 
 
-# ─── 搜尋 ────────────────────────────────────────────────────
+# ─── BM25 索引 ───────────────────────────────────────────────
 
-def search(query: str, top_k: int = 5, doc_type: str = "") -> list[dict]:
-    _, col = get_collection()
-    if col.count() == 0:
-        print("⚠️  向量索引尚未建立，請先執行：python3 vectorize.py")
+def tokenize_cn(text: str) -> list[str]:
+    """
+    中英混合 tokenizer（不依賴 jieba）：
+    - CJK 字符：單字 + bigram（「大理」→ ["大","理","大理"]）
+    - ASCII：整詞小寫
+    bigram 讓「大理」「洱海」這類雙字地名精確匹配。
+    """
+    tokens: list[str] = []
+    for match in re.finditer(r'[\u4e00-\u9fff]+|[a-zA-Z0-9]+', text):
+        word = match.group()
+        if re.match(r'[\u4e00-\u9fff]', word):
+            # 單字
+            tokens.extend(list(word))
+            # bigram
+            for i in range(len(word) - 1):
+                tokens.append(word[i:i + 2])
+        else:
+            tokens.append(word.lower())
+    return tokens
+
+
+def build_bm25_index(all_chunks: list[dict]) -> None:
+    """
+    用全部 paragraph chunks 建立 BM25 索引並序列化到 bm25_index.pkl。
+    語料 = chunk 文字（已含 enrichment prefix）。
+    """
+    from rank_bm25 import BM25Okapi
+
+    # 只索引 paragraph chunks（summary chunk 會重複，不加入）
+    para_chunks = [c for c in all_chunks if c["meta"].get("chunk_type") == "paragraph"]
+
+    corpus_ids   = [c["id"]   for c in para_chunks]
+    corpus_metas = [c["meta"] for c in para_chunks]
+    corpus_texts = [c["text"] for c in para_chunks]
+
+    tokenized = [tokenize_cn(t) for t in corpus_texts]
+    bm25      = BM25Okapi(tokenized)
+
+    data = {
+        "ids":    corpus_ids,
+        "metas":  corpus_metas,
+        "texts":  corpus_texts,
+        "bm25":   bm25,
+    }
+    BM25_PATH.write_bytes(pickle.dumps(data))
+    print(f"[BM25] 已建立索引：{len(corpus_ids)} 個 chunks → {BM25_PATH.name}")
+
+
+def load_bm25():
+    """載入已序列化的 BM25 索引，回傳 (bm25, ids, metas, texts)。"""
+    if not BM25_PATH.exists():
+        return None, [], [], []
+    data = pickle.loads(BM25_PATH.read_bytes())
+    return data["bm25"], data["ids"], data["metas"], data["texts"]
+
+
+def search_bm25(query: str, top_k: int = 15, doc_type: str = "") -> list[dict]:
+    """
+    BM25 關鍵字搜尋，回傳格式與 search() 相同。
+    """
+    bm25, ids, metas, texts = load_bm25()
+    if bm25 is None:
         return []
 
-    # ChromaDB 多條件需用 $and
+    tokens = tokenize_cn(query)
+    scores = bm25.get_scores(tokens)
+
+    # 按分數排序，取前 top_k * 3（再做去重）
+    ranked = sorted(enumerate(scores), key=lambda x: -x[1])
+
+    output    = []
+    seen_paths = set()
+    for idx, score in ranked:
+        if score <= 0:
+            break
+        meta = metas[idx]
+        if doc_type and meta.get("type") != doc_type:
+            continue
+        path = meta.get("path", "")
+        if path in seen_paths:
+            continue
+        seen_paths.add(path)
+        text = texts[idx]
+        output.append({
+            "score":     round(float(score), 4),
+            "title":     meta.get("title", ""),
+            "path":      path,
+            "date":      meta.get("date", ""),
+            "type":      meta.get("type", ""),
+            "summary":   meta.get("summary", ""),
+            "period":    meta.get("period", ""),
+            "locations": meta.get("locations", ""),
+            "snippet":   text[text.find("\n") + 1:][:200] if "\n" in text else text[:200],
+        })
+        if len(output) >= top_k:
+            break
+
+    return output
+
+
+def _rrf_merge(
+    dense_results: list[dict],
+    bm25_results:  list[dict],
+    k: int = 60,
+) -> list[dict]:
+    """
+    Reciprocal Rank Fusion：融合 dense + bm25 的排名。
+
+    RRF(d) = Σ 1/(k + rank_i(d))
+    k=60 是常用預設值（論文建議），可調。
+
+    回傳：按 RRF 分數排序的去重結果列表。
+    """
+    # 用 path 作為 document key
+    rrf_scores: dict[str, float] = {}
+    all_items:  dict[str, dict]  = {}
+
+    for rank, item in enumerate(dense_results):
+        path = item["path"]
+        rrf_scores[path] = rrf_scores.get(path, 0.0) + 1.0 / (k + rank + 1)
+        all_items[path] = item
+
+    for rank, item in enumerate(bm25_results):
+        path = item["path"]
+        rrf_scores[path] = rrf_scores.get(path, 0.0) + 1.0 / (k + rank + 1)
+        if path not in all_items:
+            all_items[path] = item
+
+    ranked = sorted(rrf_scores.items(), key=lambda x: -x[1])
+    return [all_items[path] for path, _ in ranked]
+
+
+# ─── 搜尋 ────────────────────────────────────────────────────
+
+def search_dense(query: str, top_k: int = 15, doc_type: str = "") -> list[dict]:
+    """Pure dense vector search（ChromaDB cosine similarity）。"""
+    _, col = get_collection()
+    if col.count() == 0:
+        return []
+
     if doc_type:
         where = {"$and": [{"chunk_type": {"$eq": "paragraph"}}, {"type": {"$eq": doc_type}}]}
     else:
@@ -338,8 +472,8 @@ def search(query: str, top_k: int = 5, doc_type: str = "") -> list[dict]:
         include      = ["documents", "metadatas", "distances"],
     )
 
-    output = []
-    seen_paths = set()   # 去除同一文件的重複結果
+    output     = []
+    seen_paths = set()
     for doc, meta, dist in zip(
         results["documents"][0],
         results["metadatas"][0],
@@ -361,6 +495,26 @@ def search(query: str, top_k: int = 5, doc_type: str = "") -> list[dict]:
             "snippet":   doc[doc.find("\n") + 1:][:200] if "\n" in doc else doc[:200],
         })
     return output
+
+
+def search(query: str, top_k: int = 5, doc_type: str = "") -> list[dict]:
+    """
+    Hybrid search：Dense（ChromaDB）+ BM25 → RRF 融合 → top_k 結果。
+
+    若 BM25 索引不存在（尚未建立），自動降級為純 dense search。
+    """
+    FETCH = max(top_k * 3, 15)   # 兩側各取多一點，RRF 後再截斷
+
+    dense_results = search_dense(query, top_k=FETCH, doc_type=doc_type)
+
+    # BM25 存在才做 hybrid，否則直接回傳 dense 結果
+    if BM25_PATH.exists():
+        bm25_results = search_bm25(query, top_k=FETCH, doc_type=doc_type)
+        merged = _rrf_merge(dense_results, bm25_results)
+    else:
+        merged = dense_results
+
+    return merged[:top_k]
 
 
 # ─── CLI ─────────────────────────────────────────────────────
