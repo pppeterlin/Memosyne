@@ -38,7 +38,7 @@ from datetime import datetime
 
 # ─── 路徑設定 ────────────────────────────────────────────────
 
-ROOT          = Path(__file__).parent.parent.parent   # personal-memory/
+ROOT          = Path(__file__).resolve().parent.parent.parent   # personal-memory/
 SPRING_DIR    = ROOT / "spring"                       # 記憶之泉 drop zone
 PROCESSED     = SPRING_DIR / "_processed"             # 處理後歸檔
 BRAIN_DB      = ROOT / "Personal_Brain_DB"
@@ -348,7 +348,7 @@ def main():
     parser.add_argument("--no-enrich", action="store_true", help="跳過 The Weaving（Enrichment）")
     parser.add_argument("--no-index",  action="store_true", help="跳過 The Inscription（向量索引）")
     parser.add_argument("--rebuild",   action="store_true", help="完整重建索引（非增量）")
-    parser.add_argument("--model",     default="gemma4:27b", help="Oracle 使用的 LLM 模型")
+    parser.add_argument("--model",     default="gemma4:26b", help="Oracle 使用的 LLM 模型")
     parser.add_argument("--backfill",  action="store_true",
                         help="補寫所有既有記憶的 filename_hint，然後重建索引")
     args = parser.parse_args()
