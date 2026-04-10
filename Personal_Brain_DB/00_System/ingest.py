@@ -76,6 +76,28 @@ GEMINI_PATTERNS = [
 
 SKIP_NAMES = {"README.md", "README.txt", ".gitkeep", ".DS_Store"}
 
+# ─── 檔名解析 ────────────────────────────────────────────────
+
+def extract_filename_hint(stem: str) -> list:
+    """
+    從檔名提取有意義的關鍵詞。
+    規則：
+      - 純數字開頭（YYMMDD / YYYYMMDD）→ 只記日期，不提取
+      - 日期後的部分 / 非日期名稱 → 按 _- 分割，保留 ≥2 字的詞
+    例：
+      260410_大理旅行_洱海   → ["大理旅行", "洱海"]
+      CartaBio工作日誌_Q1   → ["CartaBio工作日誌", "Q1"]
+      260410                → []（純日期，無額外資訊）
+    """
+    # 移除日期前綴（YYMMDD 或 YYYYMMDD）
+    s = re.sub(r'^\d{6,8}', '', stem).strip('_- ')
+    if not s:
+        return []
+    # 按常見分隔符切割
+    parts = re.split(r'[_\-\s]+', s)
+    # 過濾太短的詞（1個字通常是噪音）
+    return [p for p in parts if len(p) >= 2]
+
 def detect_type(path: Path) -> str:
     """回傳：'pages' | 'gemini' | 'journal' | 'knowledge' | 'unknown'"""
     if path.suffix.lower() == ".pages":
@@ -128,14 +150,17 @@ def route_pages(path: Path, dry_run: bool) -> Optional[Path]:
         _oracle_say(f"This memory already rests in the vault. Its echo endures.", indent=True)
         return dst
 
-    uid     = hashlib.md5(path.name.encode()).hexdigest()[:12]
-    summary = _summary(text)
-    tags    = _journal_tags(text)
+    uid           = hashlib.md5(path.name.encode()).hexdigest()[:12]
+    summary       = _summary(text)
+    tags          = _journal_tags(text)
+    fname_hint    = extract_filename_hint(path.stem)
+    fname_hint_js = json.dumps(fname_hint, ensure_ascii=False)
     md = (
         f'---\nuuid: "{uid}"\ntitle: "手札 {date_str}"\n'
         f'date_created: {date_str}\ndate_updated: {date_str}\n'
         f'type: "note"\nsource: "pages"\n'
         f'tags: {json.dumps(tags, ensure_ascii=False)}\n'
+        f'filename_hint: {fname_hint_js}\n'
         f'related_entities: []\nsummary: "{summary}"\n---\n\n{text}\n'
     )
     if not dry_run:
@@ -174,14 +199,17 @@ def route_journal(path: Path, dry_run: bool) -> Optional[Path]:
 
     content = path.read_text(encoding="utf-8", errors="ignore")
     if not content.strip().startswith("---"):
-        uid     = hashlib.md5(path.name.encode()).hexdigest()[:12]
-        summary = _summary(content)
-        tags    = _journal_tags(content)
+        uid           = hashlib.md5(path.name.encode()).hexdigest()[:12]
+        summary       = _summary(content)
+        tags          = _journal_tags(content)
+        fname_hint    = extract_filename_hint(path.stem)
+        fname_hint_js = json.dumps(fname_hint, ensure_ascii=False)
         front   = (
             f'---\nuuid: "{uid}"\ntitle: "手札 {date_str}"\n'
             f'date_created: {date_str}\ndate_updated: {date_str}\n'
             f'type: "note"\nsource: "manual"\n'
             f'tags: {json.dumps(tags, ensure_ascii=False)}\n'
+            f'filename_hint: {fname_hint_js}\n'
             f'related_entities: []\nsummary: "{summary}"\n---\n\n'
         )
         content = front + content

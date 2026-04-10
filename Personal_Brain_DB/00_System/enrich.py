@@ -158,12 +158,13 @@ The inscription must be precise. Let the Oracle speak:
 }}
 
 Memory title: {title}
+Filename hint（档名關鍵詞，僅供參考 — 必須驗證於正文中才可使用）: {filename_hint}
 Memory fragment:
 {content}
 """
 
 
-def call_llm(title: str, content: str, model: str) -> dict:
+def call_llm(title: str, content: str, model: str, filename_hint: list = None) -> dict:
     """呼叫本地 Ollama LLM，回傳 enrichment dict。"""
     import ollama
 
@@ -172,8 +173,12 @@ def call_llm(title: str, content: str, model: str) -> dict:
     if len(content) > 3000:
         content_trimmed += "\n...[截斷]"
 
+    # 格式化 filename_hint
+    hint_str = "、".join(filename_hint) if filename_hint else "（無）"
+
     prompt = ENRICHMENT_PROMPT.format(
         title=title,
+        filename_hint=hint_str,
         content=content_trimmed,
     )
 
@@ -307,13 +312,25 @@ def enrich_all(model: str, rebuild: bool, dry_run: bool, target_file: str | None
             continue
 
         raw_fm, fm, body = parse_frontmatter(content)
-        title   = fm.get("title", path.stem)
-        full_text = f"{title}\n{body}"
+        title         = fm.get("title", path.stem)
+        full_text     = f"{title}\n{body}"
+        fname_hint_raw = fm.get("filename_hint", [])
+        if isinstance(fname_hint_raw, list):
+            fname_hint = fname_hint_raw
+        elif fname_hint_raw:
+            # 可能被 YAML 解析為字串，嘗試還原
+            import ast
+            try:
+                fname_hint = ast.literal_eval(str(fname_hint_raw))
+            except Exception:
+                fname_hint = [str(fname_hint_raw)]
+        else:
+            fname_hint = []
 
         print(f"[{i}/{total}] {path.relative_to(BASE)} ... ", end="", flush=True)
 
         try:
-            raw_enrichment  = call_llm(title, full_text, model)
+            raw_enrichment  = call_llm(title, full_text, model, filename_hint=fname_hint)
             enrichment      = validate_entities(raw_enrichment, full_text)
             rewrite_file_with_enrichment(path, enrichment, dry_run)
 
