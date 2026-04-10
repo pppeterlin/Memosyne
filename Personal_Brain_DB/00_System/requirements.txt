@@ -7,6 +7,7 @@ chromadb>=1.5
 mcp>=1.0
 flashrank>=0.2
 ollama>=0.6
+rank-bm25>=0.2    # BM25 hybrid search
 
 # Embedding（sentence-transformers 2.7 + 相容版本鎖定）
 sentence-transformers==2.7.0
