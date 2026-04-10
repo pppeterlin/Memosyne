@@ -83,11 +83,13 @@ def extract_filename_hint(stem: str) -> list:
     從檔名提取有意義的關鍵詞。
     規則：
       - 純數字開頭（YYMMDD / YYYYMMDD）→ 只記日期，不提取
-      - 日期後的部分 / 非日期名稱 → 按 _- 分割，保留 ≥2 字的詞
+      - 日期後的部分 / 非日期名稱 → 按 _- 分割，保留有意義的詞
+      - 過濾：純英文單字母、hex hash（8位以上的十六進位）、純數字
     例：
-      260410_CityA旅行_LakeB   → ["CityA旅行", "LakeB"]
-      某公司工作日誌_Q1   → ["某公司工作日誌", "Q1"]
-      260410                → []（純日期，無額外資訊）
+      260410_CityA旅行_LakeB            → ["CityA旅行", "LakeB"]
+      某公司工作日誌_Q1            → ["某公司工作日誌", "Q1"]
+      感謝雲南房東贈禮_a830cb0247     → ["感謝雲南房東贈禮"]
+      260410                         → []（純日期）
     """
     # 移除日期前綴（YYMMDD 或 YYYYMMDD）
     s = re.sub(r'^\d{6,8}', '', stem).strip('_- ')
@@ -95,8 +97,13 @@ def extract_filename_hint(stem: str) -> list:
         return []
     # 按常見分隔符切割
     parts = re.split(r'[_\-\s]+', s)
-    # 過濾太短的詞（1個字通常是噪音）
-    return [p for p in parts if len(p) >= 2]
+    result = []
+    for p in parts:
+        if len(p) < 2:                        continue  # 單字元
+        if re.fullmatch(r'[0-9a-f]{8,}', p): continue  # hex hash
+        if re.fullmatch(r'\d+', p):           continue  # 純數字
+        result.append(p)
+    return result
 
 def detect_type(path: Path) -> str:
     """回傳：'pages' | 'gemini' | 'journal' | 'knowledge' | 'unknown'"""
@@ -254,6 +261,51 @@ def run_enrich(new_files: list, model: str):
         if result.returncode != 0:
             print(f"    [WARN] The Oracle faltered for: {rel}")
 
+def backfill_filename_hints(dry_run: bool = False) -> int:
+    """
+    掃描 Personal_Brain_DB 所有 .md，補寫 filename_hint 欄位。
+    已有 filename_hint 的檔案跳過。
+    回傳補寫的檔案數量。
+    """
+    EXCLUDE = {"00_System", "README.md"}
+    updated = 0
+
+    md_files = sorted(BRAIN_DB.rglob("*.md"))
+    targets  = [f for f in md_files
+                if not any(part in EXCLUDE for part in f.parts)]
+
+    print(f"\n  Scanning {len(targets)} memory files for filename hints...")
+
+    for path in targets:
+        content = path.read_text(encoding="utf-8")
+        if not content.startswith("---"):
+            continue
+
+        # 已有 filename_hint 就跳過
+        end = content.find("\n---", 3)
+        fm_block = content[3:end] if end > 0 else content[3:500]
+        if "filename_hint" in fm_block:
+            continue
+
+        hint = extract_filename_hint(path.stem)
+        hint_js = json.dumps(hint, ensure_ascii=False)
+
+        if not dry_run:
+            # 在第一個 --- 結尾前插入 filename_hint
+            insert_pos = end  # 在 \n--- 前插入
+            new_content = (
+                content[:insert_pos]
+                + f"\nfilename_hint: {hint_js}"
+                + content[insert_pos:]
+            )
+            path.write_text(new_content, encoding="utf-8")
+
+        hint_display = ", ".join(hint) if hint else "（純日期）"
+        print(f"    ✦ {path.relative_to(BRAIN_DB)}  →  [{hint_display}]")
+        updated += 1
+
+    return updated
+
 def run_vectorize(rebuild: bool = False):
     """The Inscription — 向量化銘刻"""
     vec_py = SYSTEM_DIR / "vectorize.py"
@@ -297,6 +349,8 @@ def main():
     parser.add_argument("--no-index",  action="store_true", help="跳過 The Inscription（向量索引）")
     parser.add_argument("--rebuild",   action="store_true", help="完整重建索引（非增量）")
     parser.add_argument("--model",     default="gemma4:27b", help="Oracle 使用的 LLM 模型")
+    parser.add_argument("--backfill",  action="store_true",
+                        help="補寫所有既有記憶的 filename_hint，然後重建索引")
     args = parser.parse_args()
 
     # ── 啟動橫幅 ────────────────────────────────────────────
@@ -306,6 +360,23 @@ def main():
     print("  ║  Nothing shall be lost to the River Lethe.          ║")
     print("  ╚══════════════════════════════════════════════════════╝")
     print()
+
+    # ── Backfill 模式（獨立流程）──────────────────────────
+    if args.backfill:
+        print("  ── Backfill: Writing filename hints to existing memories ──")
+        if args.dry_run:
+            print("  ⚠  Dry-run mode — no memory shall be written.\n")
+        n = backfill_filename_hints(dry_run=args.dry_run)
+        if not args.dry_run:
+            print(f"\n  ✦ {n} files updated with filename hints.")
+            print("\n  ── Rebuilding the eternal index ───────────────────────")
+            run_vectorize(rebuild=True)
+            print()
+            print("  🌊  The tapestry has been rewoven. All filename echoes inscribed.")
+        else:
+            print(f"\n  (dry-run) {n} files would receive filename hints.")
+        print()
+        return
 
     if not SPRING_DIR.exists():
         print(f"  [ERROR] The Spring has not been found: {SPRING_DIR}")
