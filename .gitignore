@@ -12,6 +12,12 @@ gemini\ chat/
 notes/
 個人記憶開發文檔.md
 
+# ── Mneme 入口（原始檔案與已處理歸檔不進 git）──
+Mneme/_processed/
+# 個人檔案（.pages, .txt）也不追蹤，但 README.md 和 .gitkeep 保留
+Mneme/*.pages
+Mneme/*.txt
+
 # ══════════════════════════════════════════
 #  系統生成／大型二進位（不 commit）
 # ══════════════════════════════════════════
