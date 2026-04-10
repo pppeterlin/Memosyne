@@ -63,18 +63,45 @@ def get_collection(reset: bool = False):
 # ─── Frontmatter 解析 ────────────────────────────────────────
 
 def parse_frontmatter(content: str) -> tuple[dict, str]:
-    """回傳 (metadata_dict, body_text)"""
-    fm = {}
+    """
+    回傳 (metadata_dict, body_text)
+    使用 yaml.safe_load 解析，支援 enrichment 的巢狀結構
+    （entities.locations 等）。若解析失敗則 fallback 到簡單解析。
+    """
+    import yaml
+
+    fm: dict = {}
     if not content.startswith("---"):
         return fm, content
-    end = content.find("---", 3)
+    # 找第二個 --- 作為 frontmatter 結尾
+    end = content.find("\n---", 3)
     if end < 0:
         return fm, content
-    for line in content[3:end].split("\n"):
-        if ":" in line:
-            k, _, v = line.partition(":")
-            fm[k.strip()] = v.strip().strip('"').strip("'")
-    body = content[end + 3:].strip()
+    raw_fm = content[3:end]
+    body   = content[end + 4:].strip()
+
+    # 移除 YAML 注解行（以 # 開頭的行），避免 yaml 解析錯誤
+    clean_lines = [
+        ln for ln in raw_fm.split("\n")
+        if not ln.strip().startswith("#")
+    ]
+    try:
+        parsed = yaml.safe_load("\n".join(clean_lines)) or {}
+        if isinstance(parsed, dict):
+            # 將巢狀的 entities dict 展平到頂層，方便後續 fm.get() 取用
+            for k, v in parsed.items():
+                fm[k] = v
+            entities = parsed.get("entities", {})
+            if isinstance(entities, dict):
+                for ek, ev in entities.items():
+                    fm[f"entities.{ek}"] = ev  # e.g. fm["entities.locations"]
+    except Exception:
+        # Fallback：簡單的 key:value 解析
+        for line in raw_fm.split("\n"):
+            if ":" in line and not line.startswith(" ") and not line.startswith("-"):
+                k, _, v = line.partition(":")
+                fm[k.strip()] = v.strip().strip('"').strip("'")
+
     return fm, body
 
 
@@ -100,22 +127,64 @@ def semantic_paragraphs(text: str) -> list[str]:
 
 # ─── Chunk 建立 ──────────────────────────────────────────────
 
+def parse_enrichment(fm: dict) -> dict:
+    """
+    從 frontmatter dict 中解析 enrichment 欄位。
+    enrich.py 寫入的是純字串形式，這裡做統一解析。
+    """
+    def _parse_list(raw) -> list[str]:
+        if not raw:
+            return []
+        if isinstance(raw, list):
+            return [str(x) for x in raw]
+        # JSON array 字串如 '["CityA", "LakeB"]'
+        s = str(raw).strip()
+        items = re.findall(r'"([^"]+)"|\'([^\']+)\'|([\w\u4e00-\u9fff]+)', s)
+        return [a or b or c for a, b, c in items if (a or b or c)]
+
+    return {
+        "locations": _parse_list(fm.get("entities.locations") or fm.get("locations")),
+        "people":    _parse_list(fm.get("entities.people")    or fm.get("people")),
+        "events":    _parse_list(fm.get("entities.events")    or fm.get("events")),
+        "emotions":  _parse_list(fm.get("entities.emotions")  or fm.get("emotions")),
+        "themes":    _parse_list(fm.get("themes")),
+        "period":    str(fm.get("period", "")).strip('"').strip("'"),
+    }
+
+
 def make_prefix(fm: dict) -> str:
     """
     建立 metadata 前綴，注入到每個 chunk 的文字開頭。
-    格式：[type][date][tag1,tag2] title:
+
+    未增強格式：[type][date][tag1,tag2] title:
+    增強後格式：[type][date][tag1,tag2][loc:CityA,LakeB][period:2025年某城市旅居] title:
+
+    enrichment 欄位（locations / period）直接嵌入 prefix，
+    讓 embedding 模型在向量空間中捕捉到地名與語意時期。
     """
-    doc_type = fm.get("type", "note")
-    date     = fm.get("date_created", "")[:10]
-    tags_raw = fm.get("tags", "")
-    # 清理 tags（可能是 JSON array 字串或逗號分隔）
-    tags = re.findall(r'[\w\u4e00-\u9fff]+', tags_raw)
+    doc_type = str(fm.get("type", "note") or "note")
+    date     = str(fm.get("date_created", "") or "")[:10]
+    _tags_raw = fm.get("tags", "") or ""
+    # YAML 可能解析為 list，統一轉為逗號分隔字串
+    tags_raw = ", ".join(str(t) for t in _tags_raw) if isinstance(_tags_raw, list) else str(_tags_raw)
+    tags     = re.findall(r'[\w\u4e00-\u9fff]+', tags_raw)
     tags_str = ",".join(tags[:4]) if tags else ""
     title    = fm.get("title", "")
 
     prefix = f"[{doc_type}][{date}]"
     if tags_str:
         prefix += f"[{tags_str}]"
+
+    # ── Enrichment 欄位（若已增強則注入）──
+    if fm.get("enriched_at"):
+        enr = parse_enrichment(fm)
+        if enr["locations"]:
+            prefix += f"[loc:{','.join(enr['locations'][:5])}]"
+        if enr["themes"]:
+            prefix += f"[theme:{','.join(enr['themes'][:3])}]"
+        if enr["period"]:
+            prefix += f"[period:{enr['period']}]"
+
     if title:
         prefix += f" {title}:"
     return prefix
@@ -127,21 +196,41 @@ def build_chunks(rel_path: str, fm: dict, body: str) -> list[dict]:
     回傳 list of {id, text, meta}
     """
     prefix = make_prefix(fm)
+    enr    = parse_enrichment(fm) if fm.get("enriched_at") else {}
+
     meta_base = {
-        "path":       rel_path,
-        "title":      fm.get("title", Path(rel_path).stem),
-        "type":       fm.get("type", "note"),
-        "date":       fm.get("date_created", "")[:10],
-        "source":     fm.get("source", ""),
-        "summary":    fm.get("summary", "")[:300],
+        "path":      rel_path,
+        "title":     str(fm.get("title", Path(rel_path).stem) or ""),
+        "type":      str(fm.get("type", "note") or "note"),
+        "date":      str(fm.get("date_created", "") or "")[:10],
+        "source":    str(fm.get("source", "") or ""),
+        "summary":   str(fm.get("summary", "") or "")[:300],
+        "period":    enr.get("period", ""),
+        "locations": ",".join(enr.get("locations", [])),
     }
     chunks = []
 
     # ① 文件摘要 chunk（document-level）
-    summary_text = fm.get("summary", "").strip()
-    title_text   = fm.get("title", "").strip()
-    tags_text    = fm.get("tags", "").strip()
-    doc_summary  = f"{prefix}\n{title_text}\n{tags_text}\n{summary_text}".strip()
+    # 摘要 chunk 包含 enrichment 實體，讓文件級搜尋更準確
+    summary_text   = str(fm.get("summary", "") or "").strip()
+    title_text     = str(fm.get("title", "") or "").strip()
+    tags_raw_2     = fm.get("tags", "") or ""
+    tags_text      = str(tags_raw_2).strip() if not isinstance(tags_raw_2, list) else ", ".join(str(t) for t in tags_raw_2)
+    enr_annotation = ""
+    if enr:
+        parts = []
+        if enr.get("locations"):  parts.append("地點：" + "、".join(enr["locations"]))
+        if enr.get("events"):     parts.append("事件：" + "、".join(enr["events"]))
+        if enr.get("emotions"):   parts.append("情緒：" + "、".join(enr["emotions"]))
+        if enr.get("period"):     parts.append("時期：" + enr["period"])
+        if parts:
+            enr_annotation = "  ".join(parts)
+
+    doc_summary = f"{prefix}\n{title_text}\n{tags_text}\n{summary_text}"
+    if enr_annotation:
+        doc_summary += f"\n{enr_annotation}"
+    doc_summary = doc_summary.strip()
+
     if doc_summary:
         chunks.append({
             "id":   f"{rel_path}::summary",
@@ -261,13 +350,15 @@ def search(query: str, top_k: int = 5, doc_type: str = "") -> list[dict]:
             continue
         seen_paths.add(path)
         output.append({
-            "score":   round(1 - dist, 4),
-            "title":   meta.get("title", ""),
-            "path":    path,
-            "date":    meta.get("date", ""),
-            "type":    meta.get("type", ""),
-            "summary": meta.get("summary", ""),
-            "snippet": doc[doc.find("\n") + 1:][:200] if "\n" in doc else doc[:200],
+            "score":     round(1 - dist, 4),
+            "title":     meta.get("title", ""),
+            "path":      path,
+            "date":      meta.get("date", ""),
+            "type":      meta.get("type", ""),
+            "summary":   meta.get("summary", ""),
+            "period":    meta.get("period", ""),
+            "locations": meta.get("locations", ""),
+            "snippet":   doc[doc.find("\n") + 1:][:200] if "\n" in doc else doc[:200],
         })
     return output
 

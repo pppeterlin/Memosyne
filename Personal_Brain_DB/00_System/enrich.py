@@ -1,0 +1,349 @@
+#!/usr/bin/env python3
+"""
+Personal Brain DB — LLM 語意增強（Enrichment Layer）
+
+原則：Ground-Truth Preserving
+──────────────────────────────────────
+1. 只提取文本中「明確出現」的實體，絕不推斷或補充
+2. 每個提取結果都做字串驗證（必須出現在原文中）
+3. LLM 溫度設為 0（確定性最高）
+4. 已增強過的檔案預設跳過（用 enriched_at 欄位判斷）
+5. 保留原始 frontmatter，只新增 enrichment 欄位
+
+執行方式：
+  python3 enrich.py                        # 只處理未增強的檔案
+  python3 enrich.py --rebuild              # 強制重新增強所有檔案
+  python3 enrich.py --dry-run              # 預覽，不實際寫入
+  python3 enrich.py --model gemma3:4b     # 指定模型（預設 gemma4:26b）
+  python3 enrich.py --file 30_Journal/2025/251202.md  # 只處理單一檔案
+"""
+
+import argparse
+import json
+import re
+import sys
+import logging
+import warnings
+from datetime import datetime
+from pathlib import Path
+
+logging.disable(logging.WARNING)
+warnings.filterwarnings("ignore")
+
+BASE       = Path(__file__).parent.parent
+SYSTEM_DIR = Path(__file__).parent
+
+EXCLUDE_DIRS  = {"00_System"}
+EXCLUDE_FILES = {"README.md", ".cursorrules"}
+
+# 每次 LLM 呼叫後的結果格式
+EMPTY_ENRICHMENT = {
+    "entities": {
+        "locations": [],
+        "people":    [],
+        "events":    [],
+        "emotions":  [],
+    },
+    "themes":     [],
+    "period":     "",
+    "importance": "medium",
+}
+
+# ─── Frontmatter 解析與回寫 ───────────────────────────────────
+
+def parse_frontmatter(content: str) -> tuple[dict, str, str]:
+    """
+    回傳 (raw_fm_str, fm_dict, body)
+    raw_fm_str：原始 YAML 字串（用於重寫時保留格式）
+    """
+    if not content.startswith("---"):
+        return "", {}, content
+    end = content.find("\n---", 3)
+    if end < 0:
+        return "", {}, content
+    raw_fm = content[3:end].strip()
+    body   = content[end + 4:].strip()
+
+    fm = {}
+    for line in raw_fm.split("\n"):
+        if ":" in line and not line.startswith(" ") and not line.startswith("-"):
+            k, _, v = line.partition(":")
+            fm[k.strip()] = v.strip().strip('"').strip("'")
+    return raw_fm, fm, body
+
+
+def rewrite_file_with_enrichment(path: Path, enrichment: dict, dry_run: bool) -> bool:
+    """
+    把 enrichment 欄位寫回 .md 的 frontmatter。
+    採「追加欄位」策略：不動原有欄位，只在末尾加 enrichment block。
+    """
+    content = path.read_text(encoding="utf-8")
+    if not content.startswith("---"):
+        return False
+
+    end = content.find("\n---", 3)
+    if end < 0:
+        return False
+
+    fm_block = content[3:end]
+    after    = content[end + 4:]
+
+    # 若已有 enrichment_at 欄位，先移除舊的 enrichment 段（重建）
+    fm_block = re.sub(
+        r'\n# ── Enrichment.*?(?=\n[a-z]|\Z)', '', fm_block, flags=re.DOTALL
+    )
+
+    locs    = json.dumps(enrichment["entities"]["locations"],  ensure_ascii=False)
+    people  = json.dumps(enrichment["entities"]["people"],     ensure_ascii=False)
+    events  = json.dumps(enrichment["entities"]["events"],     ensure_ascii=False)
+    emotions= json.dumps(enrichment["entities"]["emotions"],   ensure_ascii=False)
+    themes  = json.dumps(enrichment["themes"],                 ensure_ascii=False)
+    period  = enrichment.get("period", "")
+    imp     = enrichment.get("importance", "medium")
+    now     = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+    enrich_block = f"""
+# ── Enrichment（LLM 語意增強，僅含原文出現的實體）──
+enriched_at: "{now}"
+importance: {imp}
+period: "{period}"
+themes: {themes}
+entities:
+  locations: {locs}
+  people: {people}
+  events: {events}
+  emotions: {emotions}"""
+
+    new_content = f"---{fm_block}{enrich_block}\n---\n\n{after.lstrip()}"
+
+    if dry_run:
+        print(f"\n{'─'*60}")
+        print(f"[DRY-RUN] {path.relative_to(BASE)}")
+        print(enrich_block)
+        return True
+
+    path.write_text(new_content, encoding="utf-8")
+    return True
+
+
+# ─── LLM 呼叫 ────────────────────────────────────────────────
+
+ENRICHMENT_PROMPT = """\
+你是一個嚴格的資訊提取器。請從以下個人記憶文本中，提取「明確出現在原文中」的資訊。
+
+【重要規則】
+1. 只提取文本中「實際存在的文字或詞語」，禁止推斷、聯想或補充
+2. 若某個欄位找不到明確內容，填空列表 [] 或空字串 ""
+3. period 是「語意時期」標籤（例：「2025年某城市旅居」「某城市求職期」「某公司入職初期」），
+   必須是有意義的生活階段描述，不要只填日期，若無法判斷則填 ""
+4. importance 評估標準：high=人生重大事件/強烈情緒，medium=一般日常，low=瑣碎資訊
+5. themes 最多 4 個，必須是原文能對應的主題
+
+請以純 JSON 格式輸出，不要有任何說明文字：
+
+{{
+  "entities": {{
+    "locations": ["只填原文出現的地名"],
+    "people": ["只填原文出現的人名或稱謂，排除AI模型名稱"],
+    "events": ["原文描述的具體事件，5字以內"],
+    "emotions": ["原文出現的情緒詞彙"]
+  }},
+  "themes": ["主題標籤"],
+  "period": "語意時期描述或空字串",
+  "importance": "low/medium/high"
+}}
+
+文本標題：{title}
+文本內容：
+{content}
+"""
+
+
+def call_llm(title: str, content: str, model: str) -> dict:
+    """呼叫本地 Ollama LLM，回傳 enrichment dict。"""
+    import ollama
+
+    # 截斷過長內容（避免超出 context window）
+    content_trimmed = content[:3000]
+    if len(content) > 3000:
+        content_trimmed += "\n...[截斷]"
+
+    prompt = ENRICHMENT_PROMPT.format(
+        title=title,
+        content=content_trimmed,
+    )
+
+    resp = ollama.chat(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        stream=False,
+        think=False,
+        options={"temperature": 0},
+    )
+    raw = resp["message"]["content"].strip()
+
+    # 找第一個 { 到最後一個 } 之間的內容（比 .* 更可靠）
+    start = raw.find("{")
+    end   = raw.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError(f"LLM 沒有回傳 JSON：{raw[:300]}")
+    json_str = raw[start:end + 1]
+
+    # 嘗試解析
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError as e:
+        # 嘗試清理常見問題（尾部逗號、單引號）
+        cleaned = re.sub(r',\s*([}\]])', r'\1', json_str)   # 移除尾部逗號
+        cleaned = cleaned.replace("'", '"')                  # 單引號轉雙引號
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            raise ValueError(f"JSON 解析失敗（{e}）\n原始：{json_str[:400]}")
+
+
+
+# ─── 驗證：只保留原文中出現的實體 ────────────────────────────
+
+def validate_entities(enrichment: dict, original_text: str) -> dict:
+    """
+    Ground-truth preserving 驗證：
+    對每個提取的實體做字串搜尋，不在原文中出現的一律剔除。
+    """
+    text = original_text.lower()
+    result = {
+        "entities": {
+            "locations": [],
+            "people":    [],
+            "events":    [],
+            "emotions":  [],
+        },
+        "themes":     enrichment.get("themes", [])[:4],
+        "period":     enrichment.get("period", ""),
+        "importance": enrichment.get("importance", "medium"),
+    }
+
+    entities = enrichment.get("entities", {})
+
+    for loc in entities.get("locations", []):
+        if isinstance(loc, str) and loc.strip() and loc.strip() in original_text:
+            result["entities"]["locations"].append(loc.strip())
+
+    # 過濾掉「我」「你」等代名詞，只保留真實人名或有意義的稱謂
+    _skip_people = {"我", "你", "他", "她", "我們", "你們"}
+    for person in entities.get("people", []):
+        if isinstance(person, str) and person.strip() \
+                and person.strip() not in _skip_people \
+                and person.strip() in original_text:
+            result["entities"]["people"].append(person.strip())
+
+    for event in entities.get("events", []):
+        if isinstance(event, str) and event.strip():
+            # 事件允許部分詞語在原文中（事件描述可能是組合詞）
+            words = [w for w in re.findall(r'[\w\u4e00-\u9fff]+', event) if len(w) > 1]
+            if any(w in original_text for w in words):
+                result["entities"]["events"].append(event.strip())
+
+    for emo in entities.get("emotions", []):
+        if isinstance(emo, str) and emo.strip() and emo.strip() in original_text:
+            result["entities"]["emotions"].append(emo.strip())
+
+    # period 驗證：主要詞語需出現在原文中
+    period = result["period"]
+    if period:
+        period_words = [w for w in re.findall(r'[\u4e00-\u9fff\w]+', period) if len(w) > 1]
+        if not any(w in original_text for w in period_words):
+            result["period"] = ""
+
+    return result
+
+
+# ─── 主流程 ─────────────────────────────────────────────────
+
+def collect_files(target_file: str | None = None) -> list[Path]:
+    if target_file:
+        p = (BASE / target_file) if not Path(target_file).is_absolute() else Path(target_file)
+        return [p] if p.exists() else []
+
+    files = []
+    for md in sorted(BASE.rglob("*.md")):
+        parts = md.relative_to(BASE).parts
+        if parts[0] in EXCLUDE_DIRS:
+            continue
+        if md.name in EXCLUDE_FILES:
+            continue
+        # Profile 資料不做 LLM enrichment（已有結構化內容）
+        if parts[0] == "10_Profile":
+            continue
+        files.append(md)
+    return files
+
+
+def already_enriched(content: str) -> bool:
+    """檢查是否已有 enriched_at 欄位。"""
+    return "enriched_at:" in content
+
+
+def enrich_all(model: str, rebuild: bool, dry_run: bool, target_file: str | None):
+    files   = collect_files(target_file)
+    total   = len(files)
+    skipped = 0
+    done    = 0
+    errors  = 0
+
+    print(f"[ENRICH] 掃描到 {total} 個記憶檔案，模型：{model}")
+    if dry_run:
+        print("[ENRICH] DRY-RUN 模式，不實際寫入\n")
+
+    for i, path in enumerate(files, 1):
+        content = path.read_text(encoding="utf-8")
+
+        if not rebuild and already_enriched(content):
+            skipped += 1
+            continue
+
+        raw_fm, fm, body = parse_frontmatter(content)
+        title   = fm.get("title", path.stem)
+        full_text = f"{title}\n{body}"
+
+        print(f"[{i}/{total}] {path.relative_to(BASE)} ... ", end="", flush=True)
+
+        try:
+            raw_enrichment  = call_llm(title, full_text, model)
+            enrichment      = validate_entities(raw_enrichment, full_text)
+            rewrite_file_with_enrichment(path, enrichment, dry_run)
+
+            locs = enrichment["entities"]["locations"]
+            period = enrichment.get("period", "")
+            print(f"OK  locs={locs}  period={period!r}")
+            done += 1
+
+        except Exception as e:
+            print(f"ERROR: {e}")
+            errors += 1
+
+    print(f"\n[ENRICH] 完成：{done} 增強，{skipped} 跳過，{errors} 錯誤")
+    if done > 0 and not dry_run:
+        print("[ENRICH] 請執行 python3 vectorize.py --rebuild 重新建立向量索引")
+
+
+# ─── CLI ────────────────────────────────────────────────────
+
+def main():
+    ap = argparse.ArgumentParser(description="Memosyne Enrichment Layer")
+    ap.add_argument("--model",   default="gemma4:26b",  help="Ollama 模型名稱")
+    ap.add_argument("--rebuild", action="store_true",   help="重新增強所有檔案（含已增強）")
+    ap.add_argument("--dry-run", action="store_true",   help="預覽結果，不實際寫入")
+    ap.add_argument("--file",    default=None,          help="只處理單一檔案（相對 BASE 路徑）")
+    args = ap.parse_args()
+
+    enrich_all(
+        model       = args.model,
+        rebuild     = args.rebuild,
+        dry_run     = args.dry_run,
+        target_file = args.file,
+    )
+
+
+if __name__ == "__main__":
+    main()
