@@ -12,6 +12,12 @@ gemini\ chat/
 notes/
 個人記憶開發文檔.md
 
+# ── spring/ 記憶之泉（原始檔案與已處理歸檔不進 git）──
+spring/_processed/
+# 個人檔案（.pages, .txt）也不追蹤，但 README.md 和 .gitkeep 保留
+spring/*.pages
+spring/*.txt
+
 # ══════════════════════════════════════════
 #  系統生成／大型二進位（不 commit）
 # ══════════════════════════════════════════
@@ -42,4 +48,4 @@ Personal_Brain_DB/00_System/bm25_index.pkl
 **/.DS_Store
 .claude/
 /_internal/
-*/.cursorrules
+*/.cursorrules.env
