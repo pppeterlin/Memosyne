@@ -518,13 +518,13 @@ def search_graph(query: str, top_k: int = 15, doc_type: str = "") -> list[dict]:
     若 Tapestry 不存在或圖為空，回傳 []。
     """
     try:
-        from tapestry import load_tapestry, graph_search as _graph_search
+        from tapestry import get_conn, graph_search as _graph_search, TAPESTRY_DB
     except ImportError:
         return []
 
-    G = load_tapestry()
-    if not G.nodes:
+    if not TAPESTRY_DB.exists():
         return []
+    conn = get_conn()
 
     # 從 query 提取搜尋詞（bigram + 整詞）
     terms: list[str] = []
@@ -538,7 +538,7 @@ def search_graph(query: str, top_k: int = 15, doc_type: str = "") -> list[dict]:
                 if bi not in terms:
                     terms.append(bi)
 
-    paths = _graph_search(terms, G, hops=2)
+    paths = _graph_search(terms, conn, hops=2)
     if not paths:
         return []
 
