@@ -84,8 +84,25 @@ SYSTEM_PROMPT = """你是林君的個人 AI 助理，擁有存取他個人記憶
 - 簡潔直接，善用對話歷史上下文
 """
 
-# ─── 貓咪 Loading 動畫 ──────────────────────────────────────
+# ─── Loading 動畫 ───────────────────────────────────────────
 
+# Phase 1：Oracle 分析問題意圖
+ORACLE_FRAMES = [
+    "  🔮 ◐  Oracle is divining the search path...",
+    "  🔮 ◓  Oracle is divining the search path...",
+    "  🔮 ◑  Oracle is divining the search path...",
+    "  🔮 ◒  Oracle is divining the search path...",
+]
+
+# Phase 2：The Spring — 搜尋記憶庫
+SPRING_FRAMES = [
+    "  🌊 ≋  The Spring stirs, seeking memories...",
+    "  🌊 ≈  The Spring stirs, seeking memories...",
+    "  🌊 ～  The Spring stirs, seeking memories...",
+    "  🌊 ≈  The Spring stirs, seeking memories...",
+]
+
+# Phase 3：貓咪 — LLM 生成回答
 CAT_FRAMES = [
     "  ฅ(=^･ω･^=)ฅ  正在翻記憶...",
     "  ฅ(=^･ω･^=)ノ  正在翻記憶...",
@@ -95,18 +112,23 @@ CAT_FRAMES = [
     "  ฅ(=^･ω･^=)ฅ  正在翻記憶...",
 ]
 
-class CatSpinner:
-    def __init__(self):
-        self._stop   = threading.Event()
-        self._thread = threading.Thread(target=self._spin, daemon=True)
+
+class _Spinner:
+    """通用 context-manager 動畫，接受自訂 frames 列表。"""
+    def __init__(self, frames: list[str], interval: float = 0.2):
+        self._frames   = frames
+        self._interval = interval
+        self._stop     = threading.Event()
+        self._thread   = threading.Thread(target=self._spin, daemon=True)
 
     def _spin(self):
-        for frame in itertools.cycle(CAT_FRAMES):
+        pad = max(len(f) for f in self._frames) + 2
+        for frame in itertools.cycle(self._frames):
             if self._stop.is_set():
                 break
             print(f"\r{frame}", end="", flush=True)
-            time.sleep(0.18)
-        print("\r" + " " * 45 + "\r", end="", flush=True)
+            time.sleep(self._interval)
+        print("\r" + " " * pad + "\r", end="", flush=True)
 
     def __enter__(self):
         self._thread.start()
@@ -115,6 +137,22 @@ class CatSpinner:
     def __exit__(self, *_):
         self._stop.set()
         self._thread.join()
+
+
+def OracleSpinner(): return _Spinner(ORACLE_FRAMES, interval=0.25)
+def SpringSpinner(): return _Spinner(SPRING_FRAMES, interval=0.22)
+
+
+class CatSpinner:
+    def __init__(self):
+        self._inner = _Spinner(CAT_FRAMES, interval=0.18)
+
+    def __enter__(self):
+        self._inner.__enter__()
+        return self
+
+    def __exit__(self, *_):
+        self._inner.__exit__()
 
 
 # ─── FlashRank Reranker ──────────────────────────────────────
@@ -354,11 +392,13 @@ def chat_once_local(
     # ── Query Planning ────────────────────────────────────────
     planned_queries: list[str] = []
     if use_plan:
-        all_queries = plan_query(query, "local", model, gemini_client)
+        with OracleSpinner():
+            all_queries = plan_query(query, "local", model, gemini_client)
         # 若 planner 只回傳原始問題（direct 型），extra_queries 為空
         planned_queries = [q for q in all_queries if q != query]
 
-    context, ranked, raw = build_context(query, fetch_k, keep_k, extra_queries=planned_queries)
+    with SpringSpinner():
+        context, ranked, raw = build_context(query, fetch_k, keep_k, extra_queries=planned_queries)
     user_content = f"【記憶片段】\n{context}\n\n【問題】\n{query}"
     messages.append({"role": "user", "content": user_content})
 
@@ -436,11 +476,13 @@ def chat_once_cloud(
     # ── Query Planning ────────────────────────────────────────
     planned_queries: list[str] = []
     if use_plan:
-        all_queries = plan_query(query, "cloud", model, client)
+        with OracleSpinner():
+            all_queries = plan_query(query, "cloud", model, client)
         planned_queries = [q for q in all_queries if q != query]
 
     label   = reply_label or model
-    context, ranked, raw = build_context(query, fetch_k, keep_k, extra_queries=planned_queries)
+    with SpringSpinner():
+        context, ranked, raw = build_context(query, fetch_k, keep_k, extra_queries=planned_queries)
     user_content = f"【記憶片段】\n{context}\n\n【問題】\n{query}"
 
     system_msg = next((m["content"] for m in messages if m["role"] == "system"), "")
