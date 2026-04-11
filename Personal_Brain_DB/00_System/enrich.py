@@ -330,13 +330,13 @@ def enrich_all(model: str, rebuild: bool, dry_run: bool, target_file: str | None
     errors  = 0
 
     # 延遲載入 Tapestry（避免在 dry-run 時寫入）
-    tapestry_G = None
+    tapestry_conn = None
     if weave_tapestry and not dry_run:
         try:
-            from tapestry import load_tapestry, save_tapestry, weave_memory as _weave
-            tapestry_G = load_tapestry()
+            from tapestry import get_conn, weave_memory as _weave
+            tapestry_conn = get_conn()
         except ImportError:
-            tapestry_G = None
+            tapestry_conn = None
 
     print(f"[ENRICH] 掃描到 {total} 個記憶檔案，模型：{model}")
     if dry_run:
@@ -379,19 +379,18 @@ def enrich_all(model: str, rebuild: bool, dry_run: bool, target_file: str | None
             done += 1
 
             # ── 織入 Tapestry ──────────────────────────────
-            if tapestry_G is not None:
+            if tapestry_conn is not None:
                 rel_path = str(path.relative_to(BASE))
-                _weave(tapestry_G, rel_path, enrichment)
+                _weave(tapestry_conn, rel_path, enrichment)
 
         except Exception as e:
             print(f"ERROR: {e}")
             errors += 1
 
-    # ── 儲存 Tapestry ───────────────────────────────────────
-    if tapestry_G is not None and done > 0:
-        save_tapestry(tapestry_G)
-        print(f"[ENRICH] Tapestry 已更新：{tapestry_G.number_of_nodes()} nodes, "
-              f"{tapestry_G.number_of_edges()} edges")
+    if tapestry_conn is not None and done > 0:
+        from tapestry import tapestry_stats
+        stats = tapestry_stats(tapestry_conn)
+        print(f"[ENRICH] Tapestry 已更新：{stats['nodes']} nodes, {stats['edges']} edges")
 
     print(f"\n[ENRICH] 完成：{done} 增強，{skipped} 跳過，{errors} 錯誤")
 
