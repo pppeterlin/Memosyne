@@ -46,6 +46,8 @@ Mnemosyne（泰坦神，記憶女神）
 | 分析 / 洞察 | Augury, Omen, Revelation | gap analysis = "The Call of the Muses" |
 | 刪除 / 歸檔 | Lethe, Oblivion | 歸檔 = "Surrendered to Lethe" |
 | 定期任務 | Rite, Vigil, Offering | 每日入庫 = "Daily Offering" |
+| 認知衰減 / 存取紀錄 | Chronicle, Mneme | access log = "The Chronicle of Mneme" |
+| 語境化增強 | Illumination, Revelation | contextual notes = "The Illumination" |
 | 錯誤 / 失敗 | Hubris, Nemesis | retry = "Defying Nemesis" |
 
 ---
@@ -100,6 +102,18 @@ The Vault（Personal_Brain_DB/）
 
 搜尋架構（vectorize.py）
     Dense（ChromaDB）+ BM25 + Tapestry Graph → 三路 RRF 合併
+    → ACT-R 認知衰減重排（The Chronicle of Mneme）
+
+The Chronicle of Mneme（mneme_weight.py）
+    — ACT-R 認知衰減系統：記憶的激活強度 = f(使用頻率, 時間距離)
+    — access_log: chronicle.db（SQLite），記錄每次搜尋/閱讀的存取
+    — 公式：A_i = ln(Σ t_k^{-0.5})
+    — 整合到 search pipeline 作為 rerank bonus
+
+The Illumination（vectorize.py --contextualize）
+    — Contextual Retrieval：為每個段落 chunk 加上語境化摘要
+    — 解決切片斷章取義問題，讓 embedding 捕捉全局脈絡
+    — 快取：contextual_cache.json（避免重複 LLM 呼叫）
 ```
 
 ### YAML enrichment 欄位
@@ -130,6 +144,32 @@ python3 00_System/enrich.py --weave-tapestry   # 同等效果
 python3 00_System/tapestry.py --stats
 python3 00_System/tapestry.py --search "Tokyo,friend-A"
 python3 00_System/tapestry.py --backfill
+```
+
+### The Chronicle CLI 用法
+
+```bash
+# 存取紀錄統計
+python3 00_System/mneme_weight.py --stats
+
+# 最活躍的 10 個記憶
+python3 00_System/mneme_weight.py --top 10
+
+# 查詢特定記憶的 ACT-R 激活分數
+python3 00_System/mneme_weight.py --score "30_Journal/2025/250604.md"
+```
+
+### Contextual Retrieval CLI 用法
+
+```bash
+# The Illumination — 為所有段落生成語境化摘要
+python3 00_System/vectorize.py --contextualize
+
+# 指定模型 + 重建所有
+python3 00_System/vectorize.py --contextualize --ctx-model gemma3:4b --rebuild
+
+# 生成語境化摘要後重建索引（完整流程）
+python3 00_System/vectorize.py --contextualize && python3 00_System/vectorize.py --rebuild
 ```
 
 ---

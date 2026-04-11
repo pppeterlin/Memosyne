@@ -44,38 +44,41 @@ def _get_collection():
 @mcp.tool()
 def search_memory(query: str, top_k: int = 5) -> str:
     """
-    語義搜尋個人記憶資料庫。
+    語義搜尋個人記憶資料庫（三路混合 + ACT-R 認知重排）。
     可搜尋 Gemini 對話紀錄、個人手札、Profile 等所有內容。
+
+    搜尋架構：Dense 向量 + BM25 關鍵字 + Tapestry 圖譜 → RRF 融合 → ACT-R 認知衰減重排
 
     Args:
         query: 搜尋關鍵字或自然語言問題（支援中文）
         top_k: 回傳前幾筆結果（預設 5）
     """
     try:
-        collection = _get_collection()
-        if collection.count() == 0:
-            return "⚠️ 向量索引尚未建立，請先執行：python3 vectorize.py"
+        from vectorize import search as hybrid_search
+        results = hybrid_search(query, top_k=top_k)
 
-        results = collection.query(
-            query_texts=[query],
-            n_results=min(top_k, collection.count()),
-            include=["documents", "metadatas", "distances"],
-        )
+        if not results:
+            return f"搜尋「{query}」— The waters are still. No echoes found."
 
-        lines = [f"搜尋「{query}」，找到 {len(results['ids'][0])} 筆結果：\n"]
-        for i, (doc, meta, dist) in enumerate(zip(
-            results["documents"][0],
-            results["metadatas"][0],
-            results["distances"][0],
-        )):
-            score = round(1 - dist, 3)
+        # 記錄 MCP 存取來源
+        try:
+            from mneme_weight import record_access
+            record_access([r["path"] for r in results], source="mcp_search")
+        except ImportError:
+            pass
+
+        lines = [f"搜尋「{query}」，找到 {len(results)} 筆結果：\n"]
+        for i, r in enumerate(results):
+            actr_info = f"  ACT-R={r['actr_score']:+.3f}" if "actr_score" in r else ""
             lines.append(
                 f"{'─'*50}\n"
-                f"#{i+1} 相關度 {score:.3f} | {meta.get('type','?')} | {meta.get('date','')}\n"
-                f"標題：{meta.get('title','')}\n"
-                f"路徑：{meta.get('path','')}\n"
-                f"摘要：{meta.get('summary','')[:150]}\n"
-                f"片段：{doc[:250]}\n"
+                f"#{i+1} 相關度 {r.get('score', 0):.3f}{actr_info} | "
+                f"{r.get('type','?')} | {r.get('date','')}\n"
+                f"標題：{r.get('title','')}\n"
+                f"路徑：{r.get('path','')}\n"
+                f"摘要：{r.get('summary','')[:150]}\n"
+                f"時期：{r.get('period','')}\n"
+                f"片段：{r.get('snippet','')[:250]}\n"
             )
         return "\n".join(lines)
 
@@ -155,7 +158,42 @@ def read_file(path: str) -> str:
         return f"檔案不存在：{path}"
     if not str(target.resolve()).startswith(str(BASE.resolve())):
         return "禁止存取 Personal_Brain_DB 範圍外的檔案"
+
+    # 記錄存取（The Chronicle of Mneme）
+    try:
+        from mneme_weight import record_access
+        record_access([path], source="mcp_read")
+    except ImportError:
+        pass
+
     return target.read_text(encoding="utf-8")
+
+
+@mcp.tool()
+def get_memory_health() -> str:
+    """
+    The Chronicle of Mneme — 記憶存取健康報告。
+    顯示存取紀錄統計、ACT-R 最活躍記憶、以及搜尋來源分佈。
+    """
+    try:
+        from mneme_weight import chronicle_stats, compute_activation
+        stats = chronicle_stats()
+        lines = [
+            "📜 The Chronicle of Mneme — Memory Health Report\n",
+            f"總存取次數：{stats['total_events']}",
+            f"已觸碰記憶：{stats['unique_memories']}",
+            f"存取來源：{stats['sources']}",
+        ]
+        if stats.get("top_accessed"):
+            lines.append("\n最活躍記憶（ACT-R 激活分數）：")
+            for path, cnt in stats["top_accessed"][:5]:
+                score = compute_activation(path)
+                lines.append(f"  [{cnt:3d} 次] ACT-R={score:+.3f}  {path}")
+        return "\n".join(lines)
+    except ImportError:
+        return "The Chronicle module is not available."
+    except Exception as e:
+        return f"The Chronicle faltered: {e}"
 
 
 if __name__ == "__main__":

@@ -38,6 +38,10 @@ Personal_Brain_DB/00_System/tapestry_db/
 # Augury 審計報告（含個人記憶內容）
 Personal_Brain_DB/00_System/augury_reports/
 
+# Chronicle（ACT-R 存取紀錄）+ Contextual cache
+Personal_Brain_DB/00_System/chronicle.db
+Personal_Brain_DB/00_System/contextual_cache.json
+
 # ══════════════════════════════════════════
 #  Python 暫存
 # ══════════════════════════════════════════
