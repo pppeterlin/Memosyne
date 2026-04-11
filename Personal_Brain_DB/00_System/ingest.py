@@ -349,8 +349,10 @@ def main():
     parser.add_argument("--no-index",  action="store_true", help="跳過 The Inscription（向量索引）")
     parser.add_argument("--rebuild",   action="store_true", help="完整重建索引（非增量）")
     parser.add_argument("--model",     default="gemma4:26b", help="Oracle 使用的 LLM 模型")
-    parser.add_argument("--backfill",  action="store_true",
+    parser.add_argument("--backfill",       action="store_true",
                         help="補寫所有既有記憶的 filename_hint，然後重建索引")
+    parser.add_argument("--weave-tapestry", action="store_true",
+                        help="從現有已增強記憶重建 Tapestry 圖（不重新 enrich）")
     args = parser.parse_args()
 
     # ── 啟動橫幅 ────────────────────────────────────────────
@@ -360,6 +362,17 @@ def main():
     print("  ║  Nothing shall be lost to the River Lethe.          ║")
     print("  ╚══════════════════════════════════════════════════════╝")
     print()
+
+    # ── Weave Tapestry 模式（獨立流程）────────────────────
+    if args.weave_tapestry:
+        print("  ── Weave Tapestry: Rebuilding graph from enriched memories ──")
+        sys.path.insert(0, str(SYSTEM_DIR))
+        from tapestry import backfill_from_vault
+        backfill_from_vault(verbose=True)
+        print()
+        print("  🌊  The Tapestry has been rewoven. All entity threads restored.")
+        print()
+        return
 
     # ── Backfill 模式（獨立流程）──────────────────────────
     if args.backfill:

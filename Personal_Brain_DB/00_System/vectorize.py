@@ -429,36 +429,40 @@ def search_bm25(query: str, top_k: int = 15, doc_type: str = "") -> list[dict]:
     return output
 
 
+def _rrf_merge_multi(
+    ranked_lists: list[list[dict]],
+    k: int = 60,
+) -> list[dict]:
+    """
+    多路 Reciprocal Rank Fusion。
+
+    RRF(d) = Σ 1/(k + rank_i(d))
+    k=60 是常用預設值（論文建議）。
+
+    接受任意數量的排名列表（dense / bm25 / graph），
+    回傳按 RRF 分數排序的去重結果列表。
+    """
+    rrf_scores: dict[str, float] = {}
+    all_items:  dict[str, dict]  = {}
+
+    for ranked in ranked_lists:
+        for rank, item in enumerate(ranked):
+            path = item["path"]
+            rrf_scores[path] = rrf_scores.get(path, 0.0) + 1.0 / (k + rank + 1)
+            if path not in all_items:
+                all_items[path] = item
+
+    ranked_final = sorted(rrf_scores.items(), key=lambda x: -x[1])
+    return [all_items[path] for path, _ in ranked_final]
+
+
 def _rrf_merge(
     dense_results: list[dict],
     bm25_results:  list[dict],
     k: int = 60,
 ) -> list[dict]:
-    """
-    Reciprocal Rank Fusion：融合 dense + bm25 的排名。
-
-    RRF(d) = Σ 1/(k + rank_i(d))
-    k=60 是常用預設值（論文建議），可調。
-
-    回傳：按 RRF 分數排序的去重結果列表。
-    """
-    # 用 path 作為 document key
-    rrf_scores: dict[str, float] = {}
-    all_items:  dict[str, dict]  = {}
-
-    for rank, item in enumerate(dense_results):
-        path = item["path"]
-        rrf_scores[path] = rrf_scores.get(path, 0.0) + 1.0 / (k + rank + 1)
-        all_items[path] = item
-
-    for rank, item in enumerate(bm25_results):
-        path = item["path"]
-        rrf_scores[path] = rrf_scores.get(path, 0.0) + 1.0 / (k + rank + 1)
-        if path not in all_items:
-            all_items[path] = item
-
-    ranked = sorted(rrf_scores.items(), key=lambda x: -x[1])
-    return [all_items[path] for path, _ in ranked]
+    """兩路 RRF（保留向後兼容）。"""
+    return _rrf_merge_multi([dense_results, bm25_results], k=k)
 
 
 # ─── 搜尋 ────────────────────────────────────────────────────
@@ -506,23 +510,99 @@ def search_dense(query: str, top_k: int = 15, doc_type: str = "") -> list[dict]:
     return output
 
 
+def search_graph(query: str, top_k: int = 15, doc_type: str = "") -> list[dict]:
+    """
+    Tapestry 圖搜尋：從 query 詞彙出發，在實體關聯圖上遍歷，找相關記憶。
+
+    回傳格式與 search_dense / search_bm25 相同，方便 RRF 合併。
+    若 Tapestry 不存在或圖為空，回傳 []。
+    """
+    try:
+        from tapestry import load_tapestry, graph_search as _graph_search
+    except ImportError:
+        return []
+
+    G = load_tapestry()
+    if not G.nodes:
+        return []
+
+    # 從 query 提取搜尋詞（bigram + 整詞）
+    terms: list[str] = []
+    for match in re.finditer(r'[\u4e00-\u9fff]+|[a-zA-Z0-9]+', query):
+        word = match.group()
+        if len(word) >= 2:
+            terms.append(word)
+            # bigram
+            for i in range(len(word) - 1):
+                bi = word[i:i + 2]
+                if bi not in terms:
+                    terms.append(bi)
+
+    paths = _graph_search(terms, G, hops=2)
+    if not paths:
+        return []
+
+    # 從 BM25 metas 查找路徑對應的 metadata（避免重新讀檔）
+    _, _, bm25_metas, _ = load_bm25()
+    meta_by_path: dict[str, dict] = {}
+    for m in bm25_metas:
+        p = m.get("path", "")
+        if p and p not in meta_by_path:
+            meta_by_path[p] = m
+
+    output: list[dict] = []
+    seen_paths: set[str] = set()
+    for rank, path in enumerate(paths):
+        if path in seen_paths:
+            continue
+        if doc_type and meta_by_path.get(path, {}).get("type", "") != doc_type:
+            continue
+        seen_paths.add(path)
+        m = meta_by_path.get(path, {})
+        score = 1.0 / (rank + 1)   # 排名越前分數越高
+        output.append({
+            "score":     round(score, 4),
+            "title":     m.get("title", path),
+            "path":      path,
+            "date":      m.get("date", ""),
+            "type":      m.get("type", ""),
+            "summary":   m.get("summary", ""),
+            "period":    m.get("period", ""),
+            "locations": m.get("locations", ""),
+            "snippet":   "",   # graph search 不提供 snippet
+        })
+        if len(output) >= top_k:
+            break
+
+    return output
+
+
 def search(query: str, top_k: int = 5, doc_type: str = "") -> list[dict]:
     """
-    Hybrid search：Dense（ChromaDB）+ BM25 → RRF 融合 → top_k 結果。
+    三路 Hybrid search：Dense（ChromaDB）+ BM25 + Tapestry Graph → RRF 融合 → top_k 結果。
 
-    若 BM25 索引不存在（尚未建立），自動降級為純 dense search。
+    降級策略：
+    - 無 BM25 索引 → 跳過 BM25
+    - 無 Tapestry  → 跳過圖搜尋
+    - 三路都有    → RRF 三路合併
     """
-    FETCH = max(top_k * 3, 15)   # 兩側各取多一點，RRF 後再截斷
+    FETCH = max(top_k * 3, 15)   # 各路各取多一點，RRF 後再截斷
 
     dense_results = search_dense(query, top_k=FETCH, doc_type=doc_type)
+    ranked_lists  = [dense_results]
 
-    # BM25 存在才做 hybrid，否則直接回傳 dense 結果
     if BM25_PATH.exists():
         bm25_results = search_bm25(query, top_k=FETCH, doc_type=doc_type)
-        merged = _rrf_merge(dense_results, bm25_results)
-    else:
-        merged = dense_results
+        ranked_lists.append(bm25_results)
 
+    graph_results = search_graph(query, top_k=FETCH, doc_type=doc_type)
+    if graph_results:
+        ranked_lists.append(graph_results)
+
+    if len(ranked_lists) == 1:
+        return dense_results[:top_k]
+
+    merged = _rrf_merge_multi(ranked_lists)
     return merged[:top_k]
 
 
