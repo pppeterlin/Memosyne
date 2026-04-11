@@ -32,6 +32,7 @@ Personal_Brain_DB/00_System/flashrank_cache/
 Personal_Brain_DB/00_System/index.json
 Personal_Brain_DB/00_System/bm25_index.pkl
 Personal_Brain_DB/00_System/tapestry.json
+Personal_Brain_DB/00_System/tapestry_db/
 
 # ══════════════════════════════════════════
 #  Python 暫存
