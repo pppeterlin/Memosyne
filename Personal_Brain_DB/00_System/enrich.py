@@ -54,9 +54,10 @@ EMPTY_ENRICHMENT = {
         "events":    [],
         "emotions":  [],
     },
-    "themes":     [],
-    "period":     "",
-    "importance": "medium",
+    "themes":        [],
+    "period":        "",
+    "importance":    "medium",
+    "personal_facts": [],
 }
 
 # ─── Frontmatter 解析與回寫 ───────────────────────────────────
@@ -110,6 +111,7 @@ def rewrite_file_with_enrichment(path: Path, enrichment: dict, dry_run: bool) ->
     themes  = json.dumps(enrichment["themes"],                 ensure_ascii=False)
     period  = enrichment.get("period", "")
     imp     = enrichment.get("importance", "medium")
+    facts   = json.dumps(enrichment.get("personal_facts", []), ensure_ascii=False)
     now     = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
     enrich_block = f"""
@@ -118,6 +120,7 @@ enriched_at: "{now}"
 importance: {imp}
 period: "{period}"
 themes: {themes}
+personal_facts: {facts}
 entities:
   locations: {locs}
   people: {people}
@@ -151,7 +154,11 @@ THE LAWS OF THE ORACLE（不可違背）:
    Must be a meaningful life-stage description, not just a date. Return "" if unclear.
 5. importance: high=life-defining moment or strong emotion, medium=ordinary day, low=trivial detail
 6. themes: max 4, must be grounded in the text
-7. Speak ONLY in pure JSON — no preamble, no explanation, no commentary
+7. personal_facts: first-person factual statements about the author's own life that appear in the text.
+   These are personal experiences or facts, NOT reference knowledge or objective information.
+   Example: "丈母娘家在鄭州" = personal fact. "鄭州是河南省省會" = reference, exclude it.
+   Max 5 items. Each must be a concise statement (under 30 chars). Return [] if none.
+8. Speak ONLY in pure JSON — no preamble, no explanation, no commentary
 
 The inscription must be precise. Let the Oracle speak:
 
@@ -164,7 +171,8 @@ The inscription must be precise. Let the Oracle speak:
   }},
   "themes": ["主題標籤，最多4個"],
   "period": "語意時期描述或空字串",
-  "importance": "low/medium/high"
+  "importance": "low/medium/high",
+  "personal_facts": ["作者個人生活事實（非客觀知識），最多5條"]
 }}
 
 Memory title: {title}
@@ -237,9 +245,10 @@ def validate_entities(enrichment: dict, original_text: str) -> dict:
             "events":    [],
             "emotions":  [],
         },
-        "themes":     enrichment.get("themes", [])[:4],
-        "period":     enrichment.get("period", ""),
-        "importance": enrichment.get("importance", "medium"),
+        "themes":         enrichment.get("themes", [])[:4],
+        "period":         enrichment.get("period", ""),
+        "importance":     enrichment.get("importance", "medium"),
+        "personal_facts": [],
     }
 
     entities = enrichment.get("entities", {})
@@ -274,6 +283,15 @@ def validate_entities(enrichment: dict, original_text: str) -> dict:
         if not any(w in original_text for w in period_words):
             result["period"] = ""
 
+    # personal_facts 驗證：至少一個關鍵詞（≥2字）出現在原文中
+    for fact in enrichment.get("personal_facts", [])[:5]:
+        if not isinstance(fact, str) or not fact.strip():
+            continue
+        fact = fact.strip()
+        keywords = [w for w in re.findall(r'[\u4e00-\u9fff\w]+', fact) if len(w) >= 2]
+        if any(kw in original_text for kw in keywords):
+            result["personal_facts"].append(fact)
+
     return result
 
 
@@ -303,12 +321,22 @@ def already_enriched(content: str) -> bool:
     return "enriched_at:" in content
 
 
-def enrich_all(model: str, rebuild: bool, dry_run: bool, target_file: str | None):
+def enrich_all(model: str, rebuild: bool, dry_run: bool, target_file: str | None,
+               weave_tapestry: bool = True):
     files   = collect_files(target_file)
     total   = len(files)
     skipped = 0
     done    = 0
     errors  = 0
+
+    # 延遲載入 Tapestry（避免在 dry-run 時寫入）
+    tapestry_G = None
+    if weave_tapestry and not dry_run:
+        try:
+            from tapestry import load_tapestry, save_tapestry, weave_memory as _weave
+            tapestry_G = load_tapestry()
+        except ImportError:
+            tapestry_G = None
 
     print(f"[ENRICH] 掃描到 {total} 個記憶檔案，模型：{model}")
     if dry_run:
@@ -344,14 +372,26 @@ def enrich_all(model: str, rebuild: bool, dry_run: bool, target_file: str | None
             enrichment      = validate_entities(raw_enrichment, full_text)
             rewrite_file_with_enrichment(path, enrichment, dry_run)
 
-            locs = enrichment["entities"]["locations"]
+            locs   = enrichment["entities"]["locations"]
             period = enrichment.get("period", "")
-            print(f"OK  locs={locs}  period={period!r}")
+            facts  = enrichment.get("personal_facts", [])
+            print(f"OK  locs={locs}  period={period!r}  facts={len(facts)}")
             done += 1
+
+            # ── 織入 Tapestry ──────────────────────────────
+            if tapestry_G is not None:
+                rel_path = str(path.relative_to(BASE))
+                _weave(tapestry_G, rel_path, enrichment)
 
         except Exception as e:
             print(f"ERROR: {e}")
             errors += 1
+
+    # ── 儲存 Tapestry ───────────────────────────────────────
+    if tapestry_G is not None and done > 0:
+        save_tapestry(tapestry_G)
+        print(f"[ENRICH] Tapestry 已更新：{tapestry_G.number_of_nodes()} nodes, "
+              f"{tapestry_G.number_of_edges()} edges")
 
     print(f"\n[ENRICH] 完成：{done} 增強，{skipped} 跳過，{errors} 錯誤")
 
@@ -360,17 +400,27 @@ def enrich_all(model: str, rebuild: bool, dry_run: bool, target_file: str | None
 
 def main():
     ap = argparse.ArgumentParser(description="Memosyne Enrichment Layer")
-    ap.add_argument("--model",   default="gemma4:26b",  help="Ollama 模型名稱")
-    ap.add_argument("--rebuild", action="store_true",   help="重新增強所有檔案（含已增強）")
-    ap.add_argument("--dry-run", action="store_true",   help="預覽結果，不實際寫入")
-    ap.add_argument("--file",    default=None,          help="只處理單一檔案（相對 BASE 路徑）")
+    ap.add_argument("--model",          default="gemma4:26b", help="Ollama 模型名稱")
+    ap.add_argument("--rebuild",        action="store_true",  help="重新增強所有檔案（含已增強）")
+    ap.add_argument("--dry-run",        action="store_true",  help="預覽結果，不實際寫入")
+    ap.add_argument("--file",           default=None,         help="只處理單一檔案（相對 BASE 路徑）")
+    ap.add_argument("--no-tapestry",    action="store_true",  help="跳過 Tapestry 更新")
+    ap.add_argument("--weave-tapestry", action="store_true",
+                    help="只重建 Tapestry（不重新增強，從現有 enriched_at 記憶讀取）")
     args = ap.parse_args()
 
+    if args.weave_tapestry:
+        from tapestry import backfill_from_vault
+        print("[ENRICH] The Grand Weaving — rebuilding Tapestry from existing memories...")
+        backfill_from_vault(verbose=True)
+        return
+
     enrich_all(
-        model       = args.model,
-        rebuild     = args.rebuild,
-        dry_run     = args.dry_run,
-        target_file = args.file,
+        model          = args.model,
+        rebuild        = args.rebuild,
+        dry_run        = args.dry_run,
+        target_file    = args.file,
+        weave_tapestry = not args.no_tapestry,
     )
 
 

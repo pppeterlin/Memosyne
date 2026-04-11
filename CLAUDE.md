@@ -81,14 +81,55 @@ Mnemosyne（泰坦神，記憶女神）
 ```
 The Spring Ritual（ingest.py）
     I.   The Discernment  — 繆思女神辨識格式，路由至各自領域
-    II.  The Weaving      — Oracle 提取記憶精華，編織進 YAML
+    II.  The Weaving      — Oracle 提取記憶精華，編織進 YAML + 織入 Tapestry
     III. The Inscription  — 向量化，銘刻入 Vault
 
 Oracle of Mneme（enrich.py）
     — LLM 角色，只說 JSON，不推斷、不幻想，只記錄原文出現的事實
+    — 同時提取 personal_facts（個人生活事實，區別於客觀知識）
+    — 每次增強後自動呼叫 tapestry.weave_memory() 更新圖
+
+The Tapestry（tapestry.py + tapestry.json）
+    — 圖拓樸記憶關聯層（networkx DiGraph）
+    — 節點：memory / person / location / event / period
+    — 邊：mentions / happened_at / located_in / involved_in / during
+    — 解決「鄭州 → 找不到丈母娘專案」的跨實體關聯斷裂問題
 
 The Vault（Personal_Brain_DB/）
     — 記憶的永恆居所，由繆思女神各自守護其領域
+
+搜尋架構（vectorize.py）
+    Dense（ChromaDB）+ BM25 + Tapestry Graph → 三路 RRF 合併
+```
+
+### YAML enrichment 欄位
+
+```yaml
+# ── Enrichment（LLM 語意增強，僅含原文出現的實體）──
+enriched_at: "2026-04-11T12:00:00"
+importance: medium          # low / medium / high
+period: "2025深圳求職期"
+themes: ["職涯", "轉變"]
+personal_facts:             # 個人生活事實（非客觀知識）
+  - "丈母娘家在鄭州"
+entities:
+  locations: ["鄭州", "深圳"]
+  people: ["丈母娘"]
+  events: ["丈母娘專案"]
+  emotions: ["期待"]
+```
+
+### Tapestry CLI 用法
+
+```bash
+# 從現有記憶庫重建 Tapestry（初次設定或 rebuild）
+python3 00_System/ingest.py --weave-tapestry
+python3 00_System/enrich.py --weave-tapestry   # 同等效果
+
+# Tapestry 統計 / 搜尋測試
+python3 00_System/tapestry.py --stats
+python3 00_System/tapestry.py --search "鄭州,丈母娘"
+python3 00_System/tapestry.py --backfill
 ```
 
 ---
