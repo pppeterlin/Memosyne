@@ -183,6 +183,25 @@ def trim_history(messages: list, window: int) -> list:
     return system + trimmed
 
 
+# ─── 顯示名稱 ───────────────────────────────────────────────
+
+def make_reply_label(backend: str, model: str) -> str:
+    """
+    從 backend + model 生成人性化的回覆前綴。
+      local  + gemma4:26b           → "Gemma4"
+      local  + llama3.2:3b          → "Llama3.2"
+      cloud  + gemini-2.0-flash-lite → "Gemini"
+      cloud  + gemini-1.5-pro        → "Gemini"
+    若使用者透過 --model 傳入自訂名稱，直接使用（去掉 tag）。
+    """
+    if backend == "local":
+        base = model.split(":")[0]          # "gemma4:26b" → "gemma4"
+        return base[0].upper() + base[1:]   # → "Gemma4"
+    else:
+        # cloud：取第一段（"gemini-2.0-flash-lite" → "Gemini"）
+        return model.split("-")[0].capitalize()
+
+
 # ─── 後端：本地 Ollama ───────────────────────────────────────
 
 def chat_once_local(
@@ -192,6 +211,7 @@ def chat_once_local(
     keep_k: int,
     stream: bool,
     model: str,
+    reply_label: str = "",
 ) -> tuple[str, list[dict], list[dict]]:
     import ollama
 
@@ -199,6 +219,7 @@ def chat_once_local(
     user_content = f"【記憶片段】\n{context}\n\n【問題】\n{query}"
     messages.append({"role": "user", "content": user_content})
 
+    label      = reply_label or model
     full_reply = ""
     MAX_RETRY  = 3
 
@@ -208,7 +229,7 @@ def chat_once_local(
                 with CatSpinner():
                     gen         = ollama.chat(model=model, messages=messages, stream=True, think=False)
                     first_chunk = next(gen, None)
-                print(f"\n{model} > ", end="", flush=True)
+                print(f"\n{label} > ", end="", flush=True)
                 if first_chunk:
                     t = first_chunk["message"]["content"]
                     print(t, end="", flush=True)
@@ -222,7 +243,7 @@ def chat_once_local(
                 with CatSpinner():
                     resp = ollama.chat(model=model, messages=messages, stream=False, think=False)
                 full_reply = resp["message"]["content"]
-                print(f"\n{model} > {full_reply}\n")
+                print(f"\n{label} > {full_reply}\n")
             break
 
         except Exception as e:
@@ -264,9 +285,11 @@ def chat_once_cloud(
     stream: bool,
     client,           # google.genai.Client
     model: str,
+    reply_label: str = "",
 ) -> tuple[str, list[dict], list[dict]]:
     from google.genai import types
 
+    label   = reply_label or model
     context, ranked, raw = build_context(query, fetch_k, keep_k)
     user_content = f"【記憶片段】\n{context}\n\n【問題】\n{query}"
 
@@ -285,7 +308,7 @@ def chat_once_cloud(
                     model=model, contents=history, config=config
                 )
                 first = next(gen, None)
-            print(f"\n{model} > ", end="", flush=True)
+            print(f"\n{label} > ", end="", flush=True)
             if first and first.text:
                 print(first.text, end="", flush=True)
                 full_reply += first.text
@@ -300,7 +323,7 @@ def chat_once_cloud(
                     model=model, contents=history, config=config
                 )
             full_reply = resp.text or ""
-            print(f"\n{model} > {full_reply}\n")
+            print(f"\n{label} > {full_reply}\n")
 
     except Exception as e:
         raise RuntimeError(f"Gemini API 錯誤：{e}") from e
@@ -375,6 +398,8 @@ def main():
     if args.model:
         model = args.model
 
+    reply_label = make_reply_label(backend, model)
+
     # ── 預載 reranker ────────────────────────────────────────
     print("\n載入 FlashRank reranker...", end="", flush=True)
     get_ranker()
@@ -425,11 +450,13 @@ def main():
         try:
             if backend == "cloud":
                 _, last_ranked, last_raw = chat_once_cloud(
-                    messages, query, fetch_k, keep_k, stream, gemini_client, model
+                    messages, query, fetch_k, keep_k, stream, gemini_client, model,
+                    reply_label=reply_label,
                 )
             else:
                 _, last_ranked, last_raw = chat_once_local(
-                    messages, query, fetch_k, keep_k, stream, model
+                    messages, query, fetch_k, keep_k, stream, model,
+                    reply_label=reply_label,
                 )
         except Exception as e:
             err = str(e)
