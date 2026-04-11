@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """
 Personal Brain DB — RAG Chat
-Ollama (gemma4:26b) + 個人記憶庫 + FlashRank reranker + 對話歷史滑動窗口
+支援兩種後端：
+  local  — 本地 Ollama（gemma4:26b）
+  cloud  — 雲端 Gemini API（GEMINI_API_KEY from .env）
 
 Pipeline：
-  向量搜尋（top N） → FlashRank 精排（留 top K，低於 threshold 剔掉） → 塞進 Gemma4
+  向量搜尋（top N） → FlashRank 精排（留 top K） → 送進 LLM
 
 用法：
-  python3 chat.py
-  python3 chat.py --fetch 10 --keep 4   # 向量搜 10 筆，精排後保留最多 4 筆
+  python3 chat.py                          # 互動式選擇後端
+  python3 chat.py --backend local          # 直接使用本地
+  python3 chat.py --backend cloud          # 直接使用雲端
+  python3 chat.py --fetch 10 --keep 4
   python3 chat.py --no-stream
 """
 
@@ -23,13 +27,14 @@ import warnings
 from pathlib import Path
 from functools import lru_cache
 
-# ── 靜音所有雜訊 log（sentence_transformers / huggingface / httpx）──
+# ── 靜音雜訊 log ──────────────────────────────────────────────
 warnings.filterwarnings("ignore")
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
+logging.getLogger("sentence_transformers.SentenceTransformer").setLevel(logging.ERROR)
+logging.disable(logging.WARNING)
 
-# ── VPN / Proxy 修正 ──────────────────────────────────────────
-# TUN 模式 VPN 下，httpx 可能把 localhost 請求也送進 proxy → 502
-# 設定 NO_PROXY 強制 bypass proxy for local Ollama
+# ── VPN / Proxy 修正（Ollama localhost bypass）───────────────
 os.environ.setdefault("OLLAMA_HOST", "http://127.0.0.1:11434")
 for _var in ("NO_PROXY", "no_proxy"):
     _cur = os.environ.get(_var, "")
@@ -37,32 +42,30 @@ for _var in ("NO_PROXY", "no_proxy"):
     if _bypass not in _cur:
         os.environ[_var] = f"{_cur},{_bypass}".lstrip(",")
 
-# sentence-transformers 用 logger level 決定要不要顯示 "Batches:" 進度條
-# （see SentenceTransformer.py line 309: show_progress_bar 預設取決於
-#  logger.getEffectiveLevel() == INFO）→ 提高到 ERROR 才能關掉
-logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
-logging.getLogger("sentence_transformers.SentenceTransformer").setLevel(logging.ERROR)
-logging.disable(logging.WARNING)
-
-import ollama
 from flashrank import Ranker, RerankRequest
 
 sys.path.insert(0, str(Path(__file__).parent))
 from vectorize import search
 
+# ─── 路徑 ───────────────────────────────────────────────────
+
+ROOT            = Path(__file__).parent.parent.parent   # personal-memory/
+ENV_FILE        = ROOT / ".env"
+PROFILE_DIR     = Path(__file__).parent.parent / "10_Profile"
+FLASHRANK_CACHE = Path(__file__).parent / "flashrank_cache"
+
 # ─── 全域設定 ────────────────────────────────────────────────
 
-MODEL       = "gemma4:26b"
-FETCH_K     = 10      # 向量搜尋初撈筆數（大一點給 reranker 更多候選）
-KEEP_K      = 4       # rerank 後最多保留筆數
-RERANK_THRESHOLD = 0.05   # 低於此分數的 chunk 直接丟棄
-HISTORY_WINDOW   = 8      # 保留最近幾輪對話（不含 system message）
+LOCAL_MODEL      = "gemma4:26b"
+CLOUD_MODEL      = "gemini-2.0-flash-lite"   # 免費額度最高的 Gemini 模型
 
-PROFILE_DIR      = Path(__file__).parent.parent / "10_Profile"
-PROFILE_BODY_LIM = 250    # 每個 Profile 檔案最多帶入字數
-SNIPPET_LIM      = 300    # 每筆 chunk 最多字數
+FETCH_K          = 10
+KEEP_K           = 4
+RERANK_THRESHOLD = 0.05
+HISTORY_WINDOW   = 8
 
-FLASHRANK_CACHE  = Path(__file__).parent / "flashrank_cache"
+PROFILE_BODY_LIM = 250
+SNIPPET_LIM      = 300
 
 SYSTEM_PROMPT = """你是使用者的個人 AI 助理，擁有存取他個人記憶庫的能力。
 回答規則：
@@ -105,7 +108,7 @@ class CatSpinner:
         self._thread.join()
 
 
-# ─── FlashRank Reranker（singleton，避免重複載入模型）────────
+# ─── FlashRank Reranker ──────────────────────────────────────
 
 @lru_cache(maxsize=1)
 def get_ranker() -> Ranker:
@@ -116,23 +119,11 @@ def get_ranker() -> Ranker:
 
 
 def rerank(query: str, results: list[dict], keep: int, threshold: float) -> list[dict]:
-    """
-    用 FlashRank 對向量搜尋結果精排。
-    - 剔除 score < threshold 的 chunk
-    - 最多保留 keep 筆
-    回傳：精排後的 results（加上 rerank_score 欄位）
-    """
     if not results:
         return []
-
-    passages = [
-        {"id": i, "text": r["snippet"], "meta": r}
-        for i, r in enumerate(results)
-    ]
+    passages = [{"id": i, "text": r["snippet"], "meta": r} for i, r in enumerate(results)]
     req      = RerankRequest(query=query, passages=passages)
     reranked = get_ranker().rerank(req)
-
-    # 過濾 + 截斷
     kept = []
     for item in reranked:
         if item["score"] < threshold:
@@ -142,7 +133,6 @@ def rerank(query: str, results: list[dict], keep: int, threshold: float) -> list
         kept.append(r)
         if len(kept) >= keep:
             break
-
     return kept
 
 
@@ -154,7 +144,7 @@ def get_profile_context() -> str:
         p = PROFILE_DIR / fname
         if not p.exists():
             continue
-        content  = p.read_text(encoding="utf-8")
+        content    = p.read_text(encoding="utf-8")
         summary, body_start = "", 0
         if content.startswith("---"):
             end = content.find("---", 3)
@@ -170,51 +160,32 @@ def get_profile_context() -> str:
 
 
 def build_context(query: str, fetch_k: int, keep_k: int) -> tuple[str, list[dict], list[dict]]:
-    """
-    回傳 (context 字串, 精排後結果, 原始搜尋結果)
-    """
-    # 1. 向量搜尋（多撈一些給 reranker 選）
     raw_results = search(query, top_k=fetch_k)
-
-    # 2. FlashRank 精排
-    ranked = rerank(query, raw_results, keep=keep_k, threshold=RERANK_THRESHOLD)
-
-    # 3. 組合 context
-    parts = ["=== 使用者基本資料 ===\n" + get_profile_context()]
-
+    ranked      = rerank(query, raw_results, keep=keep_k, threshold=RERANK_THRESHOLD)
+    parts       = ["=== 使用者基本資料 ===\n" + get_profile_context()]
     if ranked:
         parts.append("=== 相關記憶片段（精排後）===")
         for r in ranked:
             src     = f"[{r['type']}][{r['date']}] {r['title']}"
             snippet = r["snippet"][:SNIPPET_LIM]
-            score_info = f"rerank={r['rerank_score']:.3f}"
-            parts.append(f"來源：{src}  ({score_info})\n{snippet}")
+            parts.append(f"來源：{src}  (rerank={r['rerank_score']:.3f})\n{snippet}")
     else:
         parts.append("（未找到相關記憶片段）")
-
     return "\n\n".join(parts), ranked, raw_results
 
 
 # ─── 對話歷史滑動窗口 ────────────────────────────────────────
 
 def trim_history(messages: list, window: int) -> list:
-    """
-    保留 system message + 最近 window 輪（每輪 = user + assistant 共 2 條）。
-    超出的舊對話靜默丟棄。
-    """
-    system = [m for m in messages if m["role"] == "system"]
-    turns  = [m for m in messages if m["role"] != "system"]
-    # 每輪兩條，最多保留 window * 2 條
+    system  = [m for m in messages if m["role"] == "system"]
+    turns   = [m for m in messages if m["role"] != "system"]
     trimmed = turns[-(window * 2):]
-    if len(turns) > len(trimmed):
-        trimmed_count = (len(turns) - len(trimmed)) // 2
-        # 不印提示，靜默丟棄
     return system + trimmed
 
 
-# ─── 對話核心 ────────────────────────────────────────────────
+# ─── 後端：本地 Ollama ───────────────────────────────────────
 
-def chat_once(
+def chat_once_local(
     messages: list,
     query: str,
     fetch_k: int,
@@ -222,25 +193,22 @@ def chat_once(
     stream: bool,
     model: str,
 ) -> tuple[str, list[dict], list[dict]]:
-    """回傳 (reply, ranked_results, raw_results)"""
-    context, ranked, raw = build_context(query, fetch_k, keep_k)
+    import ollama
 
+    context, ranked, raw = build_context(query, fetch_k, keep_k)
     user_content = f"【記憶片段】\n{context}\n\n【問題】\n{query}"
     messages.append({"role": "user", "content": user_content})
 
     full_reply = ""
+    MAX_RETRY  = 3
 
-    # think=False 是 ollama 頂層參數（不是 options 裡面）
-    # 關閉 gemma4 的 thinking mode，避免 streaming 時 502
-    # retry：VPN TUN 模式下 proxy 偶爾攔截 localhost → 最多重試 3 次
-    MAX_RETRY = 3
     for attempt in range(1, MAX_RETRY + 1):
         try:
             if stream:
                 with CatSpinner():
                     gen         = ollama.chat(model=model, messages=messages, stream=True, think=False)
                     first_chunk = next(gen, None)
-                print("\nGemma4 > ", end="", flush=True)
+                print(f"\n{model} > ", end="", flush=True)
                 if first_chunk:
                     t = first_chunk["message"]["content"]
                     print(t, end="", flush=True)
@@ -254,53 +222,172 @@ def chat_once(
                 with CatSpinner():
                     resp = ollama.chat(model=model, messages=messages, stream=False, think=False)
                 full_reply = resp["message"]["content"]
-                print(f"\nGemma4 > {full_reply}\n")
-            break  # 成功，跳出 retry loop
+                print(f"\n{model} > {full_reply}\n")
+            break
 
         except Exception as e:
-            err_str = str(e)
-            is_502  = "502" in err_str
-            if is_502 and attempt < MAX_RETRY:
+            if "502" in str(e) and attempt < MAX_RETRY:
                 print(f"\r⚠️  連線抖動（{attempt}/{MAX_RETRY}），重試中...", end="", flush=True)
                 time.sleep(1.5)
-                full_reply = ""   # 清空，重新開始
+                full_reply = ""
                 continue
-            raise  # 非 502 或已超過重試次數，往外拋
+            raise
 
-    # 歷史存乾淨問題（不含 context），再套滑動窗口
     messages[-1] = {"role": "user", "content": query}
     messages.append({"role": "assistant", "content": full_reply})
     messages[:] = trim_history(messages, HISTORY_WINDOW)
-
     return full_reply, ranked, raw
+
+
+# ─── 後端：雲端 Gemini API ───────────────────────────────────
+
+def _to_gemini_history(messages: list) -> list[dict]:
+    """
+    將 Ollama 格式 messages 轉為 Gemini contents 格式。
+    system message 不進 contents（另外透過 config.system_instruction 傳入）。
+    assistant → role="model"
+    """
+    history = []
+    for m in messages:
+        if m["role"] == "system":
+            continue
+        role = "model" if m["role"] == "assistant" else "user"
+        history.append({"role": role, "parts": [{"text": m["content"]}]})
+    return history
+
+
+def chat_once_cloud(
+    messages: list,
+    query: str,
+    fetch_k: int,
+    keep_k: int,
+    stream: bool,
+    client,           # google.genai.Client
+    model: str,
+) -> tuple[str, list[dict], list[dict]]:
+    from google.genai import types
+
+    context, ranked, raw = build_context(query, fetch_k, keep_k)
+    user_content = f"【記憶片段】\n{context}\n\n【問題】\n{query}"
+
+    system_msg = next((m["content"] for m in messages if m["role"] == "system"), "")
+    history    = _to_gemini_history(messages)
+    history.append({"role": "user", "parts": [{"text": user_content}]})
+
+    config = types.GenerateContentConfig(system_instruction=system_msg)
+
+    full_reply = ""
+
+    try:
+        if stream:
+            with CatSpinner():
+                gen   = client.models.generate_content_stream(
+                    model=model, contents=history, config=config
+                )
+                first = next(gen, None)
+            print(f"\n{model} > ", end="", flush=True)
+            if first and first.text:
+                print(first.text, end="", flush=True)
+                full_reply += first.text
+            for chunk in gen:
+                if chunk.text:
+                    print(chunk.text, end="", flush=True)
+                    full_reply += chunk.text
+            print("\n")
+        else:
+            with CatSpinner():
+                resp = client.models.generate_content(
+                    model=model, contents=history, config=config
+                )
+            full_reply = resp.text or ""
+            print(f"\n{model} > {full_reply}\n")
+
+    except Exception as e:
+        raise RuntimeError(f"Gemini API 錯誤：{e}") from e
+
+    messages.append({"role": "user",      "content": query})
+    messages.append({"role": "assistant", "content": full_reply})
+    messages[:] = trim_history(messages, HISTORY_WINDOW)
+    return full_reply, ranked, raw
+
+
+# ─── 後端選擇 ────────────────────────────────────────────────
+
+def load_gemini_client():
+    """從 .env 讀取 GEMINI_API_KEY，初始化 google.genai.Client。"""
+    from dotenv import load_dotenv
+    load_dotenv(ENV_FILE)
+
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        print(f"[ERROR] 找不到 GEMINI_API_KEY（讀取自 {ENV_FILE}）")
+        print("  請確認 .env 裡有：GEMINI_API_KEY=your_key_here")
+        sys.exit(1)
+
+    from google import genai
+    return genai.Client(api_key=api_key)
+
+
+def pick_backend(forced: str) -> tuple[str, str, object | None]:
+    """
+    回傳 (backend, model, gemini_client_or_None)。
+    forced: "local" | "cloud" | "" (互動式選擇)
+    """
+    if forced == "local":
+        choice = "1"
+    elif forced == "cloud":
+        choice = "2"
+    else:
+        print("┌─────────────────────────────────────────┐")
+        print("│  選擇 LLM 後端                           │")
+        print("│  [1] 本地 Ollama（gemma4:26b）           │")
+        print("│  [2] 雲端 Gemini（gemini-2.0-flash-lite）│")
+        print("└─────────────────────────────────────────┘")
+        try:
+            choice = input("選擇 [1/2]（預設 1）: ").strip() or "1"
+        except (EOFError, KeyboardInterrupt):
+            sys.exit(0)
+
+    if choice == "2":
+        client = load_gemini_client()
+        return "cloud", CLOUD_MODEL, client
+    else:
+        return "local", LOCAL_MODEL, None
 
 
 # ─── 主程式 ─────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--fetch",     type=int,  default=FETCH_K,  help=f"向量搜尋初撈筆數（預設 {FETCH_K}）")
-    parser.add_argument("--keep",      type=int,  default=KEEP_K,   help=f"rerank 後保留筆數（預設 {KEEP_K}）")
-    parser.add_argument("--no-stream", action="store_true",         help="關閉 streaming")
-    parser.add_argument("--model",     type=str,  default=MODEL,    help="Ollama 模型名稱")
+    parser.add_argument("--backend",    type=str, default="",      help="local / cloud（省略則互動選擇）")
+    parser.add_argument("--model",      type=str, default="",      help="覆寫模型名稱")
+    parser.add_argument("--fetch",      type=int, default=FETCH_K, help=f"向量搜尋初撈筆數（預設 {FETCH_K}）")
+    parser.add_argument("--keep",       type=int, default=KEEP_K,  help=f"rerank 後保留筆數（預設 {KEEP_K}）")
+    parser.add_argument("--no-stream",  action="store_true",       help="關閉 streaming")
     args = parser.parse_args()
 
     stream  = not args.no_stream
-    model   = args.model
     fetch_k = args.fetch
     keep_k  = args.keep
 
-    # 預載 reranker（避免第一次問題有延遲）
-    print("載入 FlashRank reranker...", end="", flush=True)
+    # ── 後端選擇 ────────────────────────────────────────────
+    backend, model, gemini_client = pick_backend(args.backend)
+    if args.model:
+        model = args.model
+
+    # ── 預載 reranker ────────────────────────────────────────
+    print("\n載入 FlashRank reranker...", end="", flush=True)
     get_ranker()
     print(" OK\n")
 
-    messages: list     = [{"role": "system", "content": SYSTEM_PROMPT}]
-    last_ranked: list  = []
-    last_raw: list     = []
+    messages: list    = [{"role": "system", "content": SYSTEM_PROMPT}]
+    last_ranked: list = []
+    last_raw: list    = []
 
+    backend_label = f"Ollama / {model}" if backend == "local" else f"Gemini / {model}"
     print(f"=== Personal Brain RAG Chat ===")
-    print(f"模型：{model}  向量搜 {fetch_k} → rerank 留 {keep_k}  歷史窗口：{HISTORY_WINDOW} 輪  Streaming：{stream}")
+    print(f"後端：{backend_label}  向量搜 {fetch_k} → rerank 留 {keep_k}  "
+          f"歷史窗口：{HISTORY_WINDOW} 輪  Streaming：{stream}")
     print("指令：/ctx 看記憶來源  /hist 看歷史輪數  /clear 清歷史  q 離開\n")
 
     while True:
@@ -325,8 +412,8 @@ def main():
             else:
                 print(f"\n精排後保留 {len(last_ranked)} 筆（原始 {len(last_raw)} 筆）：")
                 for r in last_ranked:
-                    rs = r.get('rerank_score', '-')
-                    vs = r.get('score', '-')
+                    rs = r.get("rerank_score", "-")
+                    vs = r.get("score", "-")
                     print(f"  rerank={rs}  vec={vs}  [{r['type']}] {r['date']}  {r['title']}")
                 print()
             continue
@@ -336,15 +423,19 @@ def main():
             continue
 
         try:
-            _, last_ranked, last_raw = chat_once(
-                messages, query, fetch_k, keep_k, stream, model
-            )
+            if backend == "cloud":
+                _, last_ranked, last_raw = chat_once_cloud(
+                    messages, query, fetch_k, keep_k, stream, gemini_client, model
+                )
+            else:
+                _, last_ranked, last_raw = chat_once_local(
+                    messages, query, fetch_k, keep_k, stream, model
+                )
         except Exception as e:
             err = str(e)
             if "502" in err:
-                print(f"\n[ERROR] Ollama 連線失敗（502）。已重試 {MAX_RETRY} 次。\n"
-                      f"  可能原因：VPN TUN 模式攔截了 localhost 連線。\n"
-                      f"  建議：暫時關閉 VPN 或改用分流模式後重試。\n")
+                print(f"\n[ERROR] Ollama 連線失敗（502）。"
+                      f"可能是 VPN TUN 模式攔截了 localhost 連線。\n")
             else:
                 print(f"\n[ERROR] {type(e).__name__}: {e}\n")
 
