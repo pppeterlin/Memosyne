@@ -167,9 +167,9 @@ PLANNER_PROMPT = """\
    關鍵詞組要覆蓋不同角度，例如地名、動詞、情境詞。
 
 3. 只輸出 JSON，不要多餘說明：
-   {"type": "direct", "queries": ["原始問題"]}
+   {{"type": "direct", "queries": ["原始問題"]}}
    或
-   {"type": "enumerate", "queries": ["關鍵詞1", "關鍵詞2", "關鍵詞3"]}
+   {{"type": "enumerate", "queries": ["關鍵詞1", "關鍵詞2", "關鍵詞3"]}}
 
 使用者問題：{question}
 """
