@@ -35,6 +35,9 @@ Personal_Brain_DB/00_System/tapestry.json
 Personal_Brain_DB/00_System/tapestry_db
 Personal_Brain_DB/00_System/tapestry_db/
 
+# Augury 審計報告（含個人記憶內容）
+Personal_Brain_DB/00_System/augury_reports/
+
 # ══════════════════════════════════════════
 #  Python 暫存
 # ══════════════════════════════════════════
