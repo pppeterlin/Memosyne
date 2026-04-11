@@ -114,6 +114,17 @@ The Illumination（vectorize.py --contextualize）
     — Contextual Retrieval：為每個段落 chunk 加上語境化摘要
     — 解決切片斷章取義問題，讓 embedding 捕捉全局脈絡
     — 快取：contextual_cache.json（避免重複 LLM 呼叫）
+
+PPR Spreading Activation（tapestry.py）
+    — Personalized PageRank：以搜尋結果為 seed，在圖譜中擴散
+    — 發現語義隱含相關但未被向量/BM25 直接命中的記憶
+    — 流程：Kuzu 子圖 → NetworkX DiGraph → PPR → RRF 合併
+
+The Rite of Slumber（slumber.py）
+    — 記憶鞏固機制：定期整理記憶庫
+    — Reflection：從近期記憶提煉高層次洞察 → 10_Profile/reflections/
+    — Hebbian Learning：共現記憶強化 co_recalled 邊
+    — The Lethe Protocol：策略性遺忘（dormant 標記），不刪除可恢復
 ```
 
 ### YAML enrichment 欄位
@@ -170,6 +181,25 @@ python3 00_System/vectorize.py --contextualize --ctx-model gemma3:4b --rebuild
 
 # 生成語境化摘要後重建索引（完整流程）
 python3 00_System/vectorize.py --contextualize && python3 00_System/vectorize.py --rebuild
+```
+
+### The Rite of Slumber CLI 用法
+
+```bash
+# 執行完整鞏固（三個儀式全做）
+python3 00_System/slumber.py
+
+# 僅反射（從近期記憶提煉洞察）
+python3 00_System/slumber.py --reflect --days 14
+
+# 僅赫布學習（共現記憶強化）
+python3 00_System/slumber.py --hebbian
+
+# 策略性遺忘（預覽模式）
+python3 00_System/slumber.py --forget --dry-run
+
+# 鞏固統計
+python3 00_System/slumber.py --stats
 ```
 
 ---

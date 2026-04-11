@@ -170,6 +170,58 @@ def read_file(path: str) -> str:
 
 
 @mcp.tool()
+def optimize_memory(action: str = "all") -> str:
+    """
+    The Rite of Slumber — 記憶鞏固優化。
+    定期執行以提煉洞察、強化關聯、清理冗餘。
+
+    Args:
+        action: 'all' | 'reflect' | 'hebbian' | 'forget' | 'stats'
+    """
+    try:
+        if action == "stats":
+            from slumber import slumber_stats
+            import io, sys
+            buf = io.StringIO()
+            old_stdout = sys.stdout
+            sys.stdout = buf
+            slumber_stats()
+            sys.stdout = old_stdout
+            return buf.getvalue()
+
+        if action == "reflect":
+            from slumber import reflect
+            path = reflect(dry_run=False)
+            return f"Reflection complete: {path}" if path else "Not enough recent memories for reflection."
+
+        if action == "hebbian":
+            from slumber import hebbian_learning
+            count = hebbian_learning(dry_run=False)
+            return f"Hebbian learning: {count} co_recalled edges strengthened."
+
+        if action == "forget":
+            from slumber import strategic_forgetting
+            count = strategic_forgetting(dry_run=False)
+            return f"Lethe Protocol: {count} memories marked dormant."
+
+        if action == "all":
+            lines = []
+            from slumber import reflect, hebbian_learning, strategic_forgetting
+            path = reflect(dry_run=False)
+            lines.append(f"Reflection: {path or 'skipped'}")
+            heb = hebbian_learning(dry_run=False)
+            lines.append(f"Hebbian: {heb} edges")
+            fgt = strategic_forgetting(dry_run=False)
+            lines.append(f"Lethe: {fgt} dormant")
+            return "The Rite of Slumber complete.\n" + "\n".join(lines)
+
+        return f"Unknown action: {action}. Use: all, reflect, hebbian, forget, stats"
+
+    except Exception as e:
+        return f"The Rite faltered: {e}"
+
+
+@mcp.tool()
 def get_memory_health() -> str:
     """
     The Chronicle of Mneme — 記憶存取健康報告。

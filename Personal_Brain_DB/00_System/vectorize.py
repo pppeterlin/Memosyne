@@ -410,6 +410,9 @@ def collect_all_chunks() -> list[dict]:
             continue
         rel = str(md_file.relative_to(BASE))
         fm, body = parse_frontmatter(content)
+        # 排除 dormant 記憶（The Lethe Protocol）
+        if fm.get("dormant") in (True, "true", "True"):
+            continue
         chunks = build_chunks(rel, fm, body)
         all_chunks.extend(chunks)
     return all_chunks
@@ -739,10 +742,48 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
         ranked_lists.append(graph_results)
 
     if len(ranked_lists) == 1:
-        results = dense_results[:top_k]
+        results = _rrf_merge_multi(ranked_lists)
     else:
-        merged = _rrf_merge_multi(ranked_lists)
-        results = merged[:top_k]
+        results = _rrf_merge_multi(ranked_lists)
+
+    # ── PPR Spreading Activation（傳播激發補充）──
+    # 用現有搜尋結果作為 seed，從圖譜中發現隱藏關聯的記憶
+    try:
+        from tapestry import spreading_activation, TAPESTRY_DB
+        if TAPESTRY_DB.exists():
+            seed_paths = [r["path"] for r in results[:5]]
+            ppr_results = spreading_activation(seed_paths, top_k=FETCH)
+            if ppr_results:
+                # 從 BM25 metas 取 metadata
+                _, _, bm25_metas, _ = load_bm25()
+                meta_by_path: dict[str, dict] = {}
+                for m in bm25_metas:
+                    p = m.get("path", "")
+                    if p and p not in meta_by_path:
+                        meta_by_path[p] = m
+
+                ppr_list: list[dict] = []
+                for path, ppr_score in ppr_results:
+                    m = meta_by_path.get(path, {})
+                    if doc_type and m.get("type", "") != doc_type:
+                        continue
+                    ppr_list.append({
+                        "score":     round(ppr_score * 10, 4),  # PPR 分數 scaling
+                        "title":     m.get("title", path),
+                        "path":      path,
+                        "date":      m.get("date", ""),
+                        "type":      m.get("type", ""),
+                        "summary":   m.get("summary", ""),
+                        "period":    m.get("period", ""),
+                        "locations": m.get("locations", ""),
+                        "snippet":   "",
+                    })
+                if ppr_list:
+                    results = _rrf_merge_multi([results, ppr_list])
+    except ImportError:
+        pass
+
+    results = results[:top_k]
 
     # ── ACT-R 認知衰減重排（The Chronicle of Mneme）──
     try:
