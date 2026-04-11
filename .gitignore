@@ -48,4 +48,4 @@ Personal_Brain_DB/00_System/bm25_index.pkl
 **/.DS_Store
 .claude/
 /_internal/
-*/.cursorrules
+*/.cursorrules.env
