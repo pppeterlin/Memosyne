@@ -31,6 +31,7 @@ Personal_Brain_DB/00_System/flashrank_cache/
 # 自動生成的全文索引
 Personal_Brain_DB/00_System/index.json
 Personal_Brain_DB/00_System/bm25_index.pkl
+Personal_Brain_DB/00_System/tapestry.json
 
 # ══════════════════════════════════════════
 #  Python 暫存
