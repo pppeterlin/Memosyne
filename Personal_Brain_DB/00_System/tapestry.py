@@ -2,192 +2,243 @@
 """
 Memosyne — The Tapestry (tapestry.py)
 
-圖拓樸記憶關聯層。記憶庫越大，圖的價值越高。
+圖拓樸記憶關聯層，以 kuzu 嵌入式圖資料庫儲存。
 
-節點類型（Node types）：
-  memory   — 記憶檔案本身（memory path 為 id）
-  person   — 人物（friend-A、partner）
-  location — 地點（Tokyo、Osaka、CityA）
-  event    — 事件（範例事件A、範例事件B）
-  period   — 時期（2025年某城市求職期）
+記憶庫越大，圖的查詢效能優勢越明顯：
+  networkx + JSON  → 每次查詢需把整個圖載入記憶體，純 Python BFS
+  kuzu             → 磁碟常駐、有索引、Cypher 查詢、原生多跳遍歷
 
-邊類型（Edge types）：
-  memory → entity  : mentions       （記憶提及此實體）
-  person → location: located_in     （人物與地點的關聯）
-  event  → location: happened_at    （事件發生地）
-  person → event   : involved_in    （人物參與事件）
-  memory → period  : during         （記憶所屬時期）
+節點類型（Node tables）：
+  Memory   — 記憶檔案（path 為 primary key）
+  Person   — 人物（name 為 primary key）
+  Location — 地點
+  Event    — 事件
+  Period   — 時期
+
+關聯類型（Rel tables）：
+  mem_person   : Memory → Person    （記憶提及人物）
+  mem_location : Memory → Location  （記憶提及地點）
+  mem_event    : Memory → Event     （記憶提及事件）
+  mem_period   : Memory → Period    （記憶所屬時期）
+  event_loc    : Event  → Location  （事件發生地）
+  person_loc   : Person → Location  （人物與地點關聯，含 evidence）
+  person_event : Person → Event     （人物參與事件）
 
 用法：
-  from tapestry import load_tapestry, weave_memory, graph_search, backfill_from_vault
+  python3 tapestry.py --backfill        # 從現有記憶庫重建圖
+  python3 tapestry.py --stats           # 顯示統計
+  python3 tapestry.py --search "Tokyo"   # 圖搜尋測試
 """
 
-import json
+import re
+import sys
 from pathlib import Path
 
-import networkx as nx
+import kuzu
 
-TAPESTRY_PATH = Path(__file__).parent / "tapestry.json"
 BASE          = Path(__file__).parent.parent
+TAPESTRY_DB   = Path(__file__).parent / "tapestry_db"
 
-ENTITY_NODE_TYPES = {"person", "location", "event", "period"}
+# ─── 資料庫初始化 ────────────────────────────────────────────
 
-
-# ─── 載入 / 儲存 ─────────────────────────────────────────────
-
-def load_tapestry() -> nx.DiGraph:
-    """從磁碟載入 Tapestry。若不存在則回傳空圖。"""
-    if not TAPESTRY_PATH.exists():
-        return nx.DiGraph()
-    data = json.loads(TAPESTRY_PATH.read_text(encoding="utf-8"))
-    return nx.node_link_graph(data, directed=True, multigraph=False)
+def _open() -> tuple[kuzu.Database, kuzu.Connection]:
+    """開啟（或建立）kuzu DB，回傳 (db, conn)。"""
+    db   = kuzu.Database(str(TAPESTRY_DB))
+    conn = kuzu.Connection(db)
+    return db, conn
 
 
-def save_tapestry(G: nx.DiGraph) -> None:
-    """將 Tapestry 序列化到磁碟。"""
-    data = nx.node_link_data(G)
-    TAPESTRY_PATH.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+def _init_schema(conn: kuzu.Connection) -> None:
+    """建立 schema（IF NOT EXISTS，冪等）。"""
+    stmts = [
+        # Node tables
+        "CREATE NODE TABLE IF NOT EXISTS Memory(path STRING, PRIMARY KEY(path))",
+        "CREATE NODE TABLE IF NOT EXISTS Person(name STRING, PRIMARY KEY(name))",
+        "CREATE NODE TABLE IF NOT EXISTS Location(name STRING, PRIMARY KEY(name))",
+        "CREATE NODE TABLE IF NOT EXISTS Event(name STRING, PRIMARY KEY(name))",
+        "CREATE NODE TABLE IF NOT EXISTS Period(name STRING, PRIMARY KEY(name))",
+        # Rel tables
+        "CREATE REL TABLE IF NOT EXISTS mem_person(FROM Memory TO Person)",
+        "CREATE REL TABLE IF NOT EXISTS mem_location(FROM Memory TO Location)",
+        "CREATE REL TABLE IF NOT EXISTS mem_event(FROM Memory TO Event)",
+        "CREATE REL TABLE IF NOT EXISTS mem_period(FROM Memory TO Period)",
+        "CREATE REL TABLE IF NOT EXISTS event_loc(FROM Event TO Location)",
+        "CREATE REL TABLE IF NOT EXISTS person_loc(FROM Person TO Location, evidence STRING)",
+        "CREATE REL TABLE IF NOT EXISTS person_event(FROM Person TO Event)",
+    ]
+    for s in stmts:
+        conn.execute(s)
 
 
-# ─── 節點 / 邊 操作 ──────────────────────────────────────────
+def get_conn() -> kuzu.Connection:
+    """取得已初始化 schema 的 Connection（每次呼叫皆開新 conn）。"""
+    _, conn = _open()
+    _init_schema(conn)
+    return conn
 
-def _upsert_entity(G: nx.DiGraph, name: str, node_type: str) -> None:
-    """若節點不存在則新增；若已存在則保留現有屬性。"""
-    if not G.has_node(name):
-        G.add_node(name, type=node_type, aliases=[])
+
+# ─── MERGE helpers ───────────────────────────────────────────
+
+def _merge_node(conn: kuzu.Connection, label: str, name: str) -> None:
+    conn.execute(f"MERGE (n:{label} {{name: $n}})", {"n": name})
 
 
-def _add_edge_once(G: nx.DiGraph, src: str, dst: str, rel: str, **attrs) -> None:
-    """只在邊不存在時才新增（避免覆蓋現有 attrs）。"""
-    if not G.has_edge(src, dst):
-        G.add_edge(src, dst, rel=rel, **attrs)
+def _merge_memory(conn: kuzu.Connection, path: str) -> None:
+    conn.execute("MERGE (m:Memory {path: $p})", {"p": path})
+
+
+def _merge_rel(conn: kuzu.Connection, cypher: str, params: dict) -> None:
+    """用 MERGE 建立關係（節點必須已存在）。"""
+    conn.execute(cypher, params)
 
 
 # ─── 主要織入函式 ─────────────────────────────────────────────
 
 def weave_memory(
-    G: nx.DiGraph,
+    conn: kuzu.Connection,
     memory_path: str,
     enrichment: dict,
-) -> nx.DiGraph:
+) -> None:
     """
     The Weaving — 將一份記憶的 enrichment 結果織入 Tapestry。
 
     呼叫時機：enrich.py 每次成功增強後立即呼叫。
-    memory_path: 相對於 Personal_Brain_DB 的路徑（如 "30_Journal/2025/250801.md"）
+    conn 傳入已開啟的 Connection（由呼叫方管理生命週期）。
     """
     entities       = enrichment.get("entities", {})
-    period         = enrichment.get("period", "")
-    locations      = entities.get("locations", [])
-    people         = entities.get("people", [])
-    events         = entities.get("events", [])
-    personal_facts = enrichment.get("personal_facts", [])
+    period         = enrichment.get("period", "") or ""
+    locations      = [l for l in entities.get("locations", []) if l]
+    people         = [p for p in entities.get("people",    []) if p]
+    events         = [e for e in entities.get("events",    []) if e]
+    personal_facts = enrichment.get("personal_facts", []) or []
 
-    # ── 記憶節點 ──────────────────────────────────────────────
-    if not G.has_node(memory_path):
-        G.add_node(memory_path, type="memory")
+    # ── Memory node ───────────────────────────────────────────
+    _merge_memory(conn, memory_path)
 
-    # ── 時期節點 ──────────────────────────────────────────────
+    # ── Period ────────────────────────────────────────────────
     if period:
-        _upsert_entity(G, period, "period")
-        _add_edge_once(G, memory_path, period, rel="during")
+        _merge_node(conn, "Period", period)
+        conn.execute("""
+            MATCH (m:Memory {path: $mp}), (p:Period {name: $pn})
+            MERGE (m)-[:mem_period]->(p)
+        """, {"mp": memory_path, "pn": period})
 
-    # ── 地點節點 + 邊 ─────────────────────────────────────────
+    # ── Locations ─────────────────────────────────────────────
     for loc in locations:
-        _upsert_entity(G, loc, "location")
-        _add_edge_once(G, memory_path, loc, rel="mentions")
+        _merge_node(conn, "Location", loc)
+        conn.execute("""
+            MATCH (m:Memory {path: $mp}), (l:Location {name: $ln})
+            MERGE (m)-[:mem_location]->(l)
+        """, {"mp": memory_path, "ln": loc})
 
-    # ── 人物節點 + 邊 ─────────────────────────────────────────
+    # ── People ────────────────────────────────────────────────
     for person in people:
-        _upsert_entity(G, person, "person")
-        _add_edge_once(G, memory_path, person, rel="mentions")
+        _merge_node(conn, "Person", person)
+        conn.execute("""
+            MATCH (m:Memory {path: $mp}), (p:Person {name: $pn})
+            MERGE (m)-[:mem_person]->(p)
+        """, {"mp": memory_path, "pn": person})
 
-    # ── 事件節點 + 邊 ─────────────────────────────────────────
+    # ── Events ────────────────────────────────────────────────
     for event in events:
-        _upsert_entity(G, event, "event")
-        _add_edge_once(G, memory_path, event, rel="mentions")
-        # 事件 → 地點
+        _merge_node(conn, "Event", event)
+        conn.execute("""
+            MATCH (m:Memory {path: $mp}), (e:Event {name: $en})
+            MERGE (m)-[:mem_event]->(e)
+        """, {"mp": memory_path, "en": event})
+        # Event → Location
         for loc in locations:
-            _add_edge_once(G, event, loc, rel="happened_at")
-        # 人物 → 事件
+            conn.execute("""
+                MATCH (e:Event {name: $en}), (l:Location {name: $ln})
+                MERGE (e)-[:event_loc]->(l)
+            """, {"en": event, "ln": loc})
+        # Person → Event
         for person in people:
-            _add_edge_once(G, person, event, rel="involved_in")
+            conn.execute("""
+                MATCH (p:Person {name: $pn}), (e:Event {name: $en})
+                MERGE (p)-[:person_event]->(e)
+            """, {"pn": person, "en": event})
 
-    # ── personal_facts 解析：人物 → 地點 關聯 ─────────────────
-    # 若某個 personal_fact 同時包含人物名稱和地點名稱，建立 located_in 邊
+    # ── personal_facts → Person located_in Location ───────────
     for fact in personal_facts:
+        if not isinstance(fact, str):
+            continue
         for person in people:
             for loc in locations:
                 if person in fact and loc in fact:
-                    _add_edge_once(G, person, loc, rel="located_in", evidence=fact[:80])
-
-    return G
+                    conn.execute("""
+                        MATCH (p:Person {name: $pn}), (l:Location {name: $ln})
+                        MERGE (p)-[:person_loc {evidence: $ev}]->(l)
+                    """, {"pn": person, "ln": loc, "ev": fact[:80]})
 
 
 # ─── 圖搜尋 ──────────────────────────────────────────────────
 
 def graph_search(
     query_terms: list[str],
-    G: nx.DiGraph | None = None,
+    conn: kuzu.Connection | None = None,
     hops: int = 2,
 ) -> list[str]:
     """
-    從 query_terms 出發，在圖上遍歷，回傳相關的 memory path 列表（按關聯強度排序）。
+    從 query_terms 出發，以 Cypher 遍歷圖，回傳相關 memory path 列表。
 
-    流程：
-      1. 找出與 query_terms 匹配的實體節點（精確 + 子字串）
-      2. 從這些實體節點做 BFS（hops 步）
-      3. 蒐集所有可達的 memory 節點，按命中次數排序
-
-    hops=2 表示可以跨越「人物 → 事件 → 記憶」這樣的兩跳路徑。
+    hops=2 支援：Memory → Entity → Entity → Memory 的兩跳路徑。
+    回傳按關聯強度（命中次數）降序排列的 path list。
     """
-    if G is None:
-        G = load_tapestry()
-    if not G.nodes:
-        return []
+    _own_conn = conn is None
+    if _own_conn:
+        conn = get_conn()
 
-    # ── Step 1：找匹配的實體節點 ──────────────────────────────
-    matched_entities: set[str] = set()
+    memory_scores: dict[str, float] = {}
+
     for term in query_terms:
         if not term or len(term) < 2:
             continue
-        for node, attrs in G.nodes(data=True):
-            if attrs.get("type") in ENTITY_NODE_TYPES and term in node:
-                matched_entities.add(node)
+        pat = f"%{term}%"
 
-    if not matched_entities:
-        return []
+        # ── 1-hop：Memory 直接 mentions 相符實體 ─────────────
+        queries_1hop = [
+            # Memory → Location
+            ("MATCH (m:Memory)-[:mem_location]->(l:Location) "
+             "WHERE l.name CONTAINS $t RETURN DISTINCT m.path AS path", 2.0),
+            # Memory → Person
+            ("MATCH (m:Memory)-[:mem_person]->(p:Person) "
+             "WHERE p.name CONTAINS $t RETURN DISTINCT m.path AS path", 2.0),
+            # Memory → Event
+            ("MATCH (m:Memory)-[:mem_event]->(e:Event) "
+             "WHERE e.name CONTAINS $t RETURN DISTINCT m.path AS path", 2.0),
+            # Memory → Period
+            ("MATCH (m:Memory)-[:mem_period]->(pr:Period) "
+             "WHERE pr.name CONTAINS $t RETURN DISTINCT m.path AS path", 1.5),
+        ]
 
-    # ── Step 2：BFS 遍歷，蒐集 memory 節點 ───────────────────
-    memory_scores: dict[str, float] = {}
+        if hops >= 2:
+            # ── 2-hop：透過實體間關係找到更多記憶 ─────────────
+            queries_2hop = [
+                # Memory → Person → Location（Person 住在目標地點）
+                ("MATCH (m:Memory)-[:mem_person]->(p:Person)-[:person_loc]->(l:Location) "
+                 "WHERE l.name CONTAINS $t RETURN DISTINCT m.path AS path", 1.0),
+                # Memory → Event → Location（事件發生在目標地點）
+                ("MATCH (m:Memory)-[:mem_event]->(e:Event)-[:event_loc]->(l:Location) "
+                 "WHERE l.name CONTAINS $t RETURN DISTINCT m.path AS path", 1.0),
+                # Memory → Person → Event（人物參與目標事件）
+                ("MATCH (m:Memory)-[:mem_person]->(p:Person)-[:person_event]->(e:Event) "
+                 "WHERE e.name CONTAINS $t RETURN DISTINCT m.path AS path", 1.0),
+                # Memory → Location ← Event ← Person（反向：地點關聯人物）
+                ("MATCH (m:Memory)-[:mem_location]->(l:Location)<-[:event_loc]-(e:Event) "
+                 "WHERE e.name CONTAINS $t RETURN DISTINCT m.path AS path", 0.8),
+            ]
+        else:
+            queries_2hop = []
 
-    for entity in matched_entities:
-        visited  = {entity}
-        frontier = {entity}
-
-        for hop in range(hops):
-            next_frontier: set[str] = set()
-            weight = 1.0 / (hop + 1)   # 距離越遠，權重越低
-
-            for node in frontier:
-                neighbors = set(G.predecessors(node)) | set(G.successors(node))
-                for nbr in neighbors:
-                    if nbr in visited:
-                        continue
-                    visited.add(nbr)
-                    nbr_type = G.nodes[nbr].get("type")
-
-                    if nbr_type == "memory":
-                        # hop=0 的直接鄰居給更高權重
-                        bonus = 2.0 if hop == 0 else 1.0
-                        memory_scores[nbr] = memory_scores.get(nbr, 0.0) + weight * bonus
-                    else:
-                        next_frontier.add(nbr)
-
-            frontier = next_frontier
+        for cypher, weight in queries_1hop + queries_2hop:
+            try:
+                result = conn.execute(cypher, {"t": term})
+                df = result.get_as_df()
+                for path in df["path"].tolist():
+                    memory_scores[path] = memory_scores.get(path, 0.0) + weight
+            except Exception:
+                continue
 
     ranked = sorted(memory_scores.items(), key=lambda x: -x[1])
     return [path for path, _ in ranked]
@@ -197,17 +248,27 @@ def graph_search(
 
 def backfill_from_vault(verbose: bool = True) -> tuple[int, int]:
     """
-    掃描 Personal_Brain_DB 所有已增強（有 enriched_at）的 .md 記憶，
-    重建完整 Tapestry。
-
+    掃描所有已增強（有 enriched_at）的 .md 記憶，重建完整 Tapestry。
     回傳 (記憶數, 節點數)。
     """
-    import re
     import yaml
 
     EXCLUDE = {"00_System"}
-    G = nx.DiGraph()
+    conn     = get_conn()
     mem_count = 0
+
+    # 清空舊資料，重新建立
+    for tbl in ["mem_person", "mem_location", "mem_event", "mem_period",
+                "event_loc", "person_loc", "person_event"]:
+        try:
+            conn.execute(f"MATCH ()-[r:{tbl}]->() DELETE r")
+        except Exception:
+            pass
+    for tbl in ["Memory", "Person", "Location", "Event", "Period"]:
+        try:
+            conn.execute(f"MATCH (n:{tbl}) DELETE n")
+        except Exception:
+            pass
 
     for md_file in sorted(BASE.rglob("*.md")):
         if any(part in EXCLUDE for part in md_file.parts):
@@ -218,69 +279,89 @@ def backfill_from_vault(verbose: bool = True) -> tuple[int, int]:
         content = md_file.read_text(encoding="utf-8")
         if "enriched_at:" not in content:
             continue
-
-        # 解析 frontmatter
         if not content.startswith("---"):
             continue
+
         end = content.find("\n---", 3)
         if end < 0:
             continue
         raw_fm = content[3:end]
-        clean_lines = [ln for ln in raw_fm.split("\n") if not ln.strip().startswith("#")]
+        clean  = [ln for ln in raw_fm.split("\n") if not ln.strip().startswith("#")]
         try:
-            fm = yaml.safe_load("\n".join(clean_lines)) or {}
+            fm = yaml.safe_load("\n".join(clean)) or {}
         except Exception:
             continue
         if not isinstance(fm, dict):
             continue
 
-        entities = fm.get("entities") or {}
-        if not isinstance(entities, dict):
-            entities = {}
+        ents = fm.get("entities") or {}
+        if not isinstance(ents, dict):
+            ents = {}
 
         enrichment = {
             "entities": {
-                "locations": entities.get("locations") or [],
-                "people":    entities.get("people")    or [],
-                "events":    entities.get("events")    or [],
+                "locations": ents.get("locations") or [],
+                "people":    ents.get("people")    or [],
+                "events":    ents.get("events")    or [],
             },
             "period":         fm.get("period", "") or "",
             "personal_facts": fm.get("personal_facts") or [],
         }
 
         rel_path = str(md_file.relative_to(BASE))
-        weave_memory(G, rel_path, enrichment)
+        weave_memory(conn, rel_path, enrichment)
         mem_count += 1
 
-    save_tapestry(G)
-    node_count = G.number_of_nodes()
-
+    # 統計
+    stats = tapestry_stats(conn)
     if verbose:
-        entity_nodes = [n for n, d in G.nodes(data=True) if d.get("type") in ENTITY_NODE_TYPES]
-        mem_nodes    = [n for n, d in G.nodes(data=True) if d.get("type") == "memory"]
-        print(f"[TAPESTRY] 織入 {mem_count} 份記憶 → {len(mem_nodes)} memory nodes, "
-              f"{len(entity_nodes)} entity nodes, {G.number_of_edges()} edges")
-        print(f"[TAPESTRY] Tapestry 已儲存：{TAPESTRY_PATH.name}")
+        print(f"[TAPESTRY] 織入 {mem_count} 份記憶")
+        print(f"[TAPESTRY] 節點：{stats['nodes']}  邊：{stats['edges']}")
+        print(f"[TAPESTRY] 節點類型：{stats['by_type']}")
+        print(f"[TAPESTRY] DB 路徑：{TAPESTRY_DB}")
 
-    return mem_count, node_count
+    return mem_count, stats["nodes"]
 
 
 # ─── 統計 ────────────────────────────────────────────────────
 
-def tapestry_stats(G: nx.DiGraph | None = None) -> dict:
-    """回傳 Tapestry 基本統計資訊。"""
-    if G is None:
-        G = load_tapestry()
+def tapestry_stats(conn: kuzu.Connection | None = None) -> dict:
+    """回傳節點/邊統計資訊。"""
+    _own = conn is None
+    if _own:
+        conn = get_conn()
 
-    from collections import Counter
-    type_counts = Counter(d.get("type", "?") for _, d in G.nodes(data=True))
-    rel_counts  = Counter(d.get("rel", "?") for _, _, d in G.edges(data=True))
+    node_tables = ["Memory", "Person", "Location", "Event", "Period"]
+    rel_tables  = ["mem_person", "mem_location", "mem_event", "mem_period",
+                   "event_loc", "person_loc", "person_event"]
+
+    by_type: dict[str, int] = {}
+    total_nodes = 0
+    for tbl in node_tables:
+        try:
+            r = conn.execute(f"MATCH (n:{tbl}) RETURN COUNT(n) AS c")
+            c = r.get_as_df()["c"].iloc[0]
+            by_type[tbl.lower()] = int(c)
+            total_nodes += int(c)
+        except Exception:
+            by_type[tbl.lower()] = 0
+
+    by_rel: dict[str, int] = {}
+    total_edges = 0
+    for tbl in rel_tables:
+        try:
+            r = conn.execute(f"MATCH ()-[e:{tbl}]->() RETURN COUNT(e) AS c")
+            c = r.get_as_df()["c"].iloc[0]
+            by_rel[tbl] = int(c)
+            total_edges += int(c)
+        except Exception:
+            by_rel[tbl] = 0
 
     return {
-        "nodes":    G.number_of_nodes(),
-        "edges":    G.number_of_edges(),
-        "by_type":  dict(type_counts),
-        "by_rel":   dict(rel_counts),
+        "nodes":   total_nodes,
+        "edges":   total_edges,
+        "by_type": by_type,
+        "by_rel":  by_rel,
     }
 
 
@@ -288,9 +369,9 @@ def tapestry_stats(G: nx.DiGraph | None = None) -> dict:
 
 if __name__ == "__main__":
     import argparse
-    ap = argparse.ArgumentParser(description="Memosyne Tapestry — 記憶圖拓樸")
+    ap = argparse.ArgumentParser(description="Memosyne Tapestry — kuzu 圖拓樸")
     ap.add_argument("--backfill", action="store_true", help="從現有記憶庫重建 Tapestry")
-    ap.add_argument("--stats",    action="store_true", help="顯示 Tapestry 統計")
+    ap.add_argument("--stats",    action="store_true", help="顯示統計")
     ap.add_argument("--search",   type=str, default="", help="圖搜尋測試（逗號分隔關鍵詞）")
     args = ap.parse_args()
 
@@ -299,21 +380,21 @@ if __name__ == "__main__":
         backfill_from_vault(verbose=True)
 
     elif args.stats:
-        G = load_tapestry()
-        stats = tapestry_stats(G)
+        conn  = get_conn()
+        stats = tapestry_stats(conn)
         print(f"[TAPESTRY] 節點：{stats['nodes']}  邊：{stats['edges']}")
         print(f"  節點類型：{stats['by_type']}")
         print(f"  邊類型：{stats['by_rel']}")
 
     elif args.search:
         terms = [t.strip() for t in args.search.split(",") if t.strip()]
-        G = load_tapestry()
-        results = graph_search(terms, G)
+        conn  = get_conn()
+        paths = graph_search(terms, conn)
         print(f"[TAPESTRY] 搜尋：{terms}")
-        if not results:
+        if not paths:
             print("  The waters are still. No echoes found.")
         else:
-            for i, path in enumerate(results[:10], 1):
+            for i, path in enumerate(paths[:10], 1):
                 print(f"  #{i} {path}")
 
     else:
