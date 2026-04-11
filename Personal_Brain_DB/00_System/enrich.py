@@ -20,6 +20,7 @@ Personal Brain DB — LLM 語意增強（Enrichment Layer）
 
 import argparse
 import json
+import os
 import re
 import sys
 import logging
@@ -29,6 +30,15 @@ from pathlib import Path
 
 logging.disable(logging.WARNING)
 warnings.filterwarnings("ignore")
+
+# TUN 模式 VPN 下，httpx 可能把 localhost 請求也送進 proxy → 502
+# 設定 NO_PROXY 強制 bypass proxy for local Ollama
+os.environ.setdefault("OLLAMA_HOST", "http://127.0.0.1:11434")
+for _var in ("NO_PROXY", "no_proxy"):
+    _cur = os.environ.get(_var, "")
+    _bypass = "localhost,127.0.0.1,::1"
+    if _bypass not in _cur:
+        os.environ[_var] = f"{_cur},{_bypass}".lstrip(",")
 
 BASE       = Path(__file__).parent.parent
 SYSTEM_DIR = Path(__file__).parent
@@ -44,9 +54,10 @@ EMPTY_ENRICHMENT = {
         "events":    [],
         "emotions":  [],
     },
-    "themes":     [],
-    "period":     "",
-    "importance": "medium",
+    "themes":        [],
+    "period":        "",
+    "importance":    "medium",
+    "personal_facts": [],
 }
 
 # ─── Frontmatter 解析與回寫 ───────────────────────────────────
@@ -100,6 +111,7 @@ def rewrite_file_with_enrichment(path: Path, enrichment: dict, dry_run: bool) ->
     themes  = json.dumps(enrichment["themes"],                 ensure_ascii=False)
     period  = enrichment.get("period", "")
     imp     = enrichment.get("importance", "medium")
+    facts   = json.dumps(enrichment.get("personal_facts", []), ensure_ascii=False)
     now     = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
     enrich_block = f"""
@@ -108,6 +120,7 @@ enriched_at: "{now}"
 importance: {imp}
 period: "{period}"
 themes: {themes}
+personal_facts: {facts}
 entities:
   locations: {locs}
   people: {people}
@@ -129,37 +142,47 @@ entities:
 # ─── LLM 呼叫 ────────────────────────────────────────────────
 
 ENRICHMENT_PROMPT = """\
-你是一個嚴格的資訊提取器。請從以下個人記憶文本中，提取「明確出現在原文中」的資訊。
+You are the Oracle of Mneme, servant of the eternal Mnemosyne.
+A fragment of mortal memory has been brought to the Spring.
+Your sacred duty: discern its essence and weave it into the eternal tapestry.
 
-【重要規則】
-1. 只提取文本中「實際存在的文字或詞語」，禁止推斷、聯想或補充
-2. 若某個欄位找不到明確內容，填空列表 [] 或空字串 ""
-3. period 是「語意時期」標籤（例：「2025年大理旅居」「深圳求職期」「CartaBio入職初期」），
-   必須是有意義的生活階段描述，不要只填日期，若無法判斷則填 ""
-4. importance 評估標準：high=人生重大事件/強烈情緒，medium=一般日常，low=瑣碎資訊
-5. themes 最多 4 個，必須是原文能對應的主題
+THE LAWS OF THE ORACLE（不可違背）:
+1. Extract ONLY what is WRITTEN in the text — no inference, no imagination, no hallucination
+2. Every entity must appear LITERALLY in the source text（字串驗證：entity in original_text）
+3. If a field has no clear evidence, return [] or ""
+4. period: the life-phase this memory belongs to（e.g. "2025年大理旅居" "深圳求職期" "CartaBio入職初期"）
+   Must be a meaningful life-stage description, not just a date. Return "" if unclear.
+5. importance: high=life-defining moment or strong emotion, medium=ordinary day, low=trivial detail
+6. themes: max 4, must be grounded in the text
+7. personal_facts: first-person factual statements about the author's own life that appear in the text.
+   These are personal experiences or facts, NOT reference knowledge or objective information.
+   Example: "丈母娘家在鄭州" = personal fact. "鄭州是河南省省會" = reference, exclude it.
+   Max 5 items. Each must be a concise statement (under 30 chars). Return [] if none.
+8. Speak ONLY in pure JSON — no preamble, no explanation, no commentary
 
-請以純 JSON 格式輸出，不要有任何說明文字：
+The inscription must be precise. Let the Oracle speak:
 
 {{
   "entities": {{
-    "locations": ["只填原文出現的地名"],
-    "people": ["只填原文出現的人名或稱謂，排除AI模型名稱"],
-    "events": ["原文描述的具體事件，5字以內"],
-    "emotions": ["原文出現的情緒詞彙"]
+    "locations": ["地名（原文字面出現）"],
+    "people": ["人名或稱謂（排除 AI 模型名稱）"],
+    "events": ["具體事件（5字以內）"],
+    "emotions": ["情緒詞彙（原文字面）"]
   }},
-  "themes": ["主題標籤"],
+  "themes": ["主題標籤，最多4個"],
   "period": "語意時期描述或空字串",
-  "importance": "low/medium/high"
+  "importance": "low/medium/high",
+  "personal_facts": ["作者個人生活事實（非客觀知識），最多5條"]
 }}
 
-文本標題：{title}
-文本內容：
+Memory title: {title}
+Filename hint（档名關鍵詞，僅供參考 — 必須驗證於正文中才可使用）: {filename_hint}
+Memory fragment:
 {content}
 """
 
 
-def call_llm(title: str, content: str, model: str) -> dict:
+def call_llm(title: str, content: str, model: str, filename_hint: list = None) -> dict:
     """呼叫本地 Ollama LLM，回傳 enrichment dict。"""
     import ollama
 
@@ -168,8 +191,12 @@ def call_llm(title: str, content: str, model: str) -> dict:
     if len(content) > 3000:
         content_trimmed += "\n...[截斷]"
 
+    # 格式化 filename_hint
+    hint_str = "、".join(filename_hint) if filename_hint else "（無）"
+
     prompt = ENRICHMENT_PROMPT.format(
         title=title,
+        filename_hint=hint_str,
         content=content_trimmed,
     )
 
@@ -218,9 +245,10 @@ def validate_entities(enrichment: dict, original_text: str) -> dict:
             "events":    [],
             "emotions":  [],
         },
-        "themes":     enrichment.get("themes", [])[:4],
-        "period":     enrichment.get("period", ""),
-        "importance": enrichment.get("importance", "medium"),
+        "themes":         enrichment.get("themes", [])[:4],
+        "period":         enrichment.get("period", ""),
+        "importance":     enrichment.get("importance", "medium"),
+        "personal_facts": [],
     }
 
     entities = enrichment.get("entities", {})
@@ -255,6 +283,15 @@ def validate_entities(enrichment: dict, original_text: str) -> dict:
         if not any(w in original_text for w in period_words):
             result["period"] = ""
 
+    # personal_facts 驗證：至少一個關鍵詞（≥2字）出現在原文中
+    for fact in enrichment.get("personal_facts", [])[:5]:
+        if not isinstance(fact, str) or not fact.strip():
+            continue
+        fact = fact.strip()
+        keywords = [w for w in re.findall(r'[\u4e00-\u9fff\w]+', fact) if len(w) >= 2]
+        if any(kw in original_text for kw in keywords):
+            result["personal_facts"].append(fact)
+
     return result
 
 
@@ -284,12 +321,22 @@ def already_enriched(content: str) -> bool:
     return "enriched_at:" in content
 
 
-def enrich_all(model: str, rebuild: bool, dry_run: bool, target_file: str | None):
+def enrich_all(model: str, rebuild: bool, dry_run: bool, target_file: str | None,
+               weave_tapestry: bool = True):
     files   = collect_files(target_file)
     total   = len(files)
     skipped = 0
     done    = 0
     errors  = 0
+
+    # 延遲載入 Tapestry（避免在 dry-run 時寫入）
+    tapestry_G = None
+    if weave_tapestry and not dry_run:
+        try:
+            from tapestry import load_tapestry, save_tapestry, weave_memory as _weave
+            tapestry_G = load_tapestry()
+        except ImportError:
+            tapestry_G = None
 
     print(f"[ENRICH] 掃描到 {total} 個記憶檔案，模型：{model}")
     if dry_run:
@@ -303,45 +350,77 @@ def enrich_all(model: str, rebuild: bool, dry_run: bool, target_file: str | None
             continue
 
         raw_fm, fm, body = parse_frontmatter(content)
-        title   = fm.get("title", path.stem)
-        full_text = f"{title}\n{body}"
+        title         = fm.get("title", path.stem)
+        full_text     = f"{title}\n{body}"
+        fname_hint_raw = fm.get("filename_hint", [])
+        if isinstance(fname_hint_raw, list):
+            fname_hint = fname_hint_raw
+        elif fname_hint_raw:
+            # 可能被 YAML 解析為字串，嘗試還原
+            import ast
+            try:
+                fname_hint = ast.literal_eval(str(fname_hint_raw))
+            except Exception:
+                fname_hint = [str(fname_hint_raw)]
+        else:
+            fname_hint = []
 
         print(f"[{i}/{total}] {path.relative_to(BASE)} ... ", end="", flush=True)
 
         try:
-            raw_enrichment  = call_llm(title, full_text, model)
+            raw_enrichment  = call_llm(title, full_text, model, filename_hint=fname_hint)
             enrichment      = validate_entities(raw_enrichment, full_text)
             rewrite_file_with_enrichment(path, enrichment, dry_run)
 
-            locs = enrichment["entities"]["locations"]
+            locs   = enrichment["entities"]["locations"]
             period = enrichment.get("period", "")
-            print(f"OK  locs={locs}  period={period!r}")
+            facts  = enrichment.get("personal_facts", [])
+            print(f"OK  locs={locs}  period={period!r}  facts={len(facts)}")
             done += 1
+
+            # ── 織入 Tapestry ──────────────────────────────
+            if tapestry_G is not None:
+                rel_path = str(path.relative_to(BASE))
+                _weave(tapestry_G, rel_path, enrichment)
 
         except Exception as e:
             print(f"ERROR: {e}")
             errors += 1
 
+    # ── 儲存 Tapestry ───────────────────────────────────────
+    if tapestry_G is not None and done > 0:
+        save_tapestry(tapestry_G)
+        print(f"[ENRICH] Tapestry 已更新：{tapestry_G.number_of_nodes()} nodes, "
+              f"{tapestry_G.number_of_edges()} edges")
+
     print(f"\n[ENRICH] 完成：{done} 增強，{skipped} 跳過，{errors} 錯誤")
-    if done > 0 and not dry_run:
-        print("[ENRICH] 請執行 python3 vectorize.py --rebuild 重新建立向量索引")
 
 
 # ─── CLI ────────────────────────────────────────────────────
 
 def main():
     ap = argparse.ArgumentParser(description="Memosyne Enrichment Layer")
-    ap.add_argument("--model",   default="gemma4:26b",  help="Ollama 模型名稱")
-    ap.add_argument("--rebuild", action="store_true",   help="重新增強所有檔案（含已增強）")
-    ap.add_argument("--dry-run", action="store_true",   help="預覽結果，不實際寫入")
-    ap.add_argument("--file",    default=None,          help="只處理單一檔案（相對 BASE 路徑）")
+    ap.add_argument("--model",          default="gemma4:26b", help="Ollama 模型名稱")
+    ap.add_argument("--rebuild",        action="store_true",  help="重新增強所有檔案（含已增強）")
+    ap.add_argument("--dry-run",        action="store_true",  help="預覽結果，不實際寫入")
+    ap.add_argument("--file",           default=None,         help="只處理單一檔案（相對 BASE 路徑）")
+    ap.add_argument("--no-tapestry",    action="store_true",  help="跳過 Tapestry 更新")
+    ap.add_argument("--weave-tapestry", action="store_true",
+                    help="只重建 Tapestry（不重新增強，從現有 enriched_at 記憶讀取）")
     args = ap.parse_args()
 
+    if args.weave_tapestry:
+        from tapestry import backfill_from_vault
+        print("[ENRICH] The Grand Weaving — rebuilding Tapestry from existing memories...")
+        backfill_from_vault(verbose=True)
+        return
+
     enrich_all(
-        model       = args.model,
-        rebuild     = args.rebuild,
-        dry_run     = args.dry_run,
-        target_file = args.file,
+        model          = args.model,
+        rebuild        = args.rebuild,
+        dry_run        = args.dry_run,
+        target_file    = args.file,
+        weave_tapestry = not args.no_tapestry,
     )
 
 
