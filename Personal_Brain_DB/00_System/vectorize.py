@@ -1,29 +1,35 @@
 #!/usr/bin/env python3
 """
-Personal Brain DB — 向量化索引 + BM25 Hybrid Search
+Personal Brain DB — 向量化索引 + BM25 Hybrid Search + Contextual Retrieval + ACT-R
 
 索引架構：
 ─────────────────────────────────────────────
 1. Dense Vector（ChromaDB）
    paraphrase-multilingual-MiniLM-L12-v2 捕捉語義相似性
    enrichment metadata prefix 注入到每個 chunk
+   + Contextual Retrieval：語境化摘要注入每個段落 chunk
 
 2. BM25 關鍵字索引（rank-bm25）
    對「精確詞彙」查詢有優勢（地名、人名、專有名詞）
-   語料包含 enrichment 欄位（locations / period），
-   讓「雲南」查詢能找到 locations 含「雲南/CityA」的記憶
 
-3. Hybrid 融合（RRF：Reciprocal Rank Fusion）
-   Dense top-15 + BM25 top-15 → RRF 合併 → FlashRank 精排 top-5
-   互補覆蓋語義模糊 vs 精確詞彙兩種查詢類型
+3. Tapestry Graph（Kuzu 圖譜）
+   實體關聯跨記憶跳轉搜尋
+
+4. Hybrid 融合（RRF：Reciprocal Rank Fusion）
+   Dense + BM25 + Graph → RRF 合併 → ACT-R 認知衰減重排
+
+5. ACT-R 認知重排（The Chronicle of Mneme）
+   基於存取頻率與時間距離的認知衰減公式 rerank
 
 執行方式：
-  python3 vectorize.py              # 增量更新（vector + bm25）
-  python3 vectorize.py --rebuild    # 重建所有索引
+  python3 vectorize.py                    # 增量更新（vector + bm25）
+  python3 vectorize.py --rebuild          # 重建所有索引
+  python3 vectorize.py --contextualize    # The Illumination — 生成語境化段落摘要
   python3 vectorize.py --query "Osaka工作" --top 5
 """
 
 import argparse
+import json
 import pickle
 import re
 from pathlib import Path
@@ -31,9 +37,11 @@ from pathlib import Path
 BASE         = Path(__file__).parent.parent
 CHROMA_DIR   = Path(__file__).parent / "chroma_db"
 BM25_PATH    = Path(__file__).parent / "bm25_index.pkl"
+CTX_CACHE    = Path(__file__).parent / "contextual_cache.json"
 EMBED_MODEL  = "paraphrase-multilingual-MiniLM-L12-v2"
 COLLECTION   = "personal_brain"
 MIN_PARA_LEN = 25   # 少於此字數的段落略過（通常是標題殘留）
+CTX_MODEL    = "gemma3:4b"  # Contextual notes 用小模型，省 tokens
 
 
 # ─── ChromaDB 初始化 ─────────────────────────────────────────
@@ -196,6 +204,127 @@ def make_prefix(fm: dict) -> str:
     return prefix
 
 
+# ─── Contextual Retrieval（語境化切片）───────────────────────
+#
+# Anthropic Contextual Retrieval 技巧：
+# 在 embedding 之前，為每個段落加上一段「全局語境摘要」，
+# 讓 embedding 模型能捕捉到該段落在整篇文件中的角色。
+#
+# 快取：contextual_cache.json（避免重複呼叫 LLM）
+# 格式：{ "path::para0": "這段描述了...", ... }
+
+_ctx_cache: dict[str, str] | None = None
+
+
+def _load_ctx_cache() -> dict[str, str]:
+    """載入 contextual notes 快取。"""
+    global _ctx_cache
+    if _ctx_cache is not None:
+        return _ctx_cache
+    if CTX_CACHE.exists():
+        try:
+            _ctx_cache = json.loads(CTX_CACHE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            _ctx_cache = {}
+    else:
+        _ctx_cache = {}
+    return _ctx_cache
+
+
+def _save_ctx_cache(cache: dict[str, str]) -> None:
+    """儲存 contextual notes 快取。"""
+    global _ctx_cache
+    _ctx_cache = cache
+    CTX_CACHE.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+CONTEXTUAL_PROMPT = """\
+You are the Oracle of Mneme. A memory fragment has been brought before you.
+Your task: for each numbered paragraph, write ONE concise sentence (under 40 chars) \
+in the same language as the source text, explaining what that paragraph discusses \
+in the context of the whole document.
+
+Document title: {title}
+Document summary: {summary}
+
+Full document:
+{document}
+
+---
+Paragraphs to annotate:
+{paragraphs}
+
+Respond ONLY with a JSON array of strings, one per paragraph, in order.
+Example: ["描述作者抵達某城市的第一印象", "回憶與朋友在某湖騎行"]
+"""
+
+
+def generate_contextual_notes(
+    rel_path: str, title: str, summary: str, body: str,
+    paras: list[str], model: str = CTX_MODEL,
+) -> list[str]:
+    """
+    為一篇文件的所有段落批次生成 contextual notes。
+
+    一次 LLM 呼叫處理整份文件的所有段落，高效率。
+    結果自動存入快取。
+    """
+    import ollama
+
+    cache = _load_ctx_cache()
+
+    # 檢查是否所有段落都已有快取
+    cache_keys = [f"{rel_path}::para{i}" for i in range(len(paras))]
+    if all(k in cache for k in cache_keys):
+        return [cache[k] for k in cache_keys]
+
+    # 準備 prompt
+    para_list = "\n".join(f"[{i}] {p[:200]}" for i, p in enumerate(paras))
+    body_trimmed = body[:3000]
+    if len(body) > 3000:
+        body_trimmed += "\n...[截斷]"
+
+    prompt = CONTEXTUAL_PROMPT.format(
+        title=title or "(untitled)",
+        summary=summary or "(no summary)",
+        document=body_trimmed,
+        paragraphs=para_list,
+    )
+
+    try:
+        resp = ollama.chat(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            stream=False,
+            think=False,
+            options={"temperature": 0},
+        )
+        raw = resp["message"]["content"].strip()
+
+        # 解析 JSON array
+        start = raw.find("[")
+        end = raw.rfind("]")
+        if start == -1 or end == -1:
+            raise ValueError(f"LLM 沒有回傳 JSON array：{raw[:200]}")
+        notes = json.loads(raw[start:end + 1])
+
+        # 確保長度匹配
+        if len(notes) < len(paras):
+            notes.extend([""] * (len(paras) - len(notes)))
+        notes = notes[:len(paras)]
+
+        # 存入快取
+        for i, note in enumerate(notes):
+            cache[f"{rel_path}::para{i}"] = str(note)
+        _save_ctx_cache(cache)
+
+        return notes
+
+    except Exception as e:
+        print(f"  [CTX] The Oracle faltered for {rel_path}: {e}")
+        return [""] * len(paras)
+
+
 def build_chunks(rel_path: str, fm: dict, body: str) -> list[dict]:
     """
     為一個文件建立所有 chunks。
@@ -245,9 +374,16 @@ def build_chunks(rel_path: str, fm: dict, body: str) -> list[dict]:
         })
 
     # ② 段落 chunks（paragraph-level）
+    # 若有 contextual notes 快取，注入到每個段落前方（Contextual Retrieval）
     paras = semantic_paragraphs(body)
+    cache = _load_ctx_cache()
     for i, para in enumerate(paras):
-        injected = f"{prefix}\n{para}"
+        ctx_key = f"{rel_path}::para{i}"
+        ctx_note = cache.get(ctx_key, "")
+        if ctx_note:
+            injected = f"[語境：{ctx_note}]\n{prefix}\n{para}"
+        else:
+            injected = f"{prefix}\n{para}"
         chunks.append({
             "id":   f"{rel_path}::para{i}",
             "text": injected,
@@ -274,6 +410,9 @@ def collect_all_chunks() -> list[dict]:
             continue
         rel = str(md_file.relative_to(BASE))
         fm, body = parse_frontmatter(content)
+        # 排除 dormant 記憶（The Lethe Protocol）
+        if fm.get("dormant") in (True, "true", "True"):
+            continue
         chunks = build_chunks(rel, fm, body)
         all_chunks.extend(chunks)
     return all_chunks
@@ -577,14 +716,17 @@ def search_graph(query: str, top_k: int = 15, doc_type: str = "") -> list[dict]:
     return output
 
 
-def search(query: str, top_k: int = 5, doc_type: str = "") -> list[dict]:
+def search(query: str, top_k: int = 5, doc_type: str = "",
+           record_access: bool = True) -> list[dict]:
     """
-    三路 Hybrid search：Dense（ChromaDB）+ BM25 + Tapestry Graph → RRF 融合 → top_k 結果。
+    三路 Hybrid search：Dense（ChromaDB）+ BM25 + Tapestry Graph → RRF 融合
+    → ACT-R 認知衰減重排 → top_k 結果。
 
     降級策略：
     - 無 BM25 索引 → 跳過 BM25
     - 無 Tapestry  → 跳過圖搜尋
-    - 三路都有    → RRF 三路合併
+    - 無 Chronicle → 跳過 ACT-R rerank
+    - 三路都有    → RRF 三路合併 → ACT-R rerank
     """
     FETCH = max(top_k * 3, 15)   # 各路各取多一點，RRF 後再截斷
 
@@ -600,33 +742,152 @@ def search(query: str, top_k: int = 5, doc_type: str = "") -> list[dict]:
         ranked_lists.append(graph_results)
 
     if len(ranked_lists) == 1:
-        return dense_results[:top_k]
+        results = _rrf_merge_multi(ranked_lists)
+    else:
+        results = _rrf_merge_multi(ranked_lists)
 
-    merged = _rrf_merge_multi(ranked_lists)
-    return merged[:top_k]
+    # ── PPR Spreading Activation（傳播激發補充）──
+    # 用現有搜尋結果作為 seed，從圖譜中發現隱藏關聯的記憶
+    try:
+        from tapestry import spreading_activation, TAPESTRY_DB
+        if TAPESTRY_DB.exists():
+            seed_paths = [r["path"] for r in results[:5]]
+            ppr_results = spreading_activation(seed_paths, top_k=FETCH)
+            if ppr_results:
+                # 從 BM25 metas 取 metadata
+                _, _, bm25_metas, _ = load_bm25()
+                meta_by_path: dict[str, dict] = {}
+                for m in bm25_metas:
+                    p = m.get("path", "")
+                    if p and p not in meta_by_path:
+                        meta_by_path[p] = m
+
+                ppr_list: list[dict] = []
+                for path, ppr_score in ppr_results:
+                    m = meta_by_path.get(path, {})
+                    if doc_type and m.get("type", "") != doc_type:
+                        continue
+                    ppr_list.append({
+                        "score":     round(ppr_score * 10, 4),  # PPR 分數 scaling
+                        "title":     m.get("title", path),
+                        "path":      path,
+                        "date":      m.get("date", ""),
+                        "type":      m.get("type", ""),
+                        "summary":   m.get("summary", ""),
+                        "period":    m.get("period", ""),
+                        "locations": m.get("locations", ""),
+                        "snippet":   "",
+                    })
+                if ppr_list:
+                    results = _rrf_merge_multi([results, ppr_list])
+    except ImportError:
+        pass
+
+    results = results[:top_k]
+
+    # ── ACT-R 認知衰減重排（The Chronicle of Mneme）──
+    try:
+        from mneme_weight import actr_rerank
+        results = actr_rerank(results)
+    except ImportError:
+        pass
+
+    # ── 記錄存取（Chronicle access log）──
+    if record_access and results:
+        try:
+            from mneme_weight import record_access as _record
+            _record([r["path"] for r in results], source="search")
+        except ImportError:
+            pass
+
+    return results
 
 
 # ─── CLI ─────────────────────────────────────────────────────
 
+def contextualize_all(model: str = CTX_MODEL, rebuild: bool = False):
+    """
+    The Illumination — 為所有記憶的段落生成語境化摘要。
+
+    掃描 Vault 中所有 .md 檔案，為每個段落生成 contextual note，
+    存入 contextual_cache.json。後續 build_index 時會自動讀取。
+    """
+    cache = _load_ctx_cache() if not rebuild else {}
+    total_files = 0
+    total_notes = 0
+    skipped = 0
+
+    print(f"🔮 The Illumination begins... (model: {model})")
+    if rebuild:
+        print("   Rebuilding all contextual notes from scratch.\n")
+
+    for md_file in sorted(BASE.rglob("*.md")):
+        if "00_System" in str(md_file):
+            continue
+        if md_file.name in EXCLUDE_FILES:
+            continue
+        try:
+            content = md_file.read_text(encoding="utf-8")
+        except Exception:
+            continue
+
+        rel = str(md_file.relative_to(BASE))
+        fm, body = parse_frontmatter(content)
+        paras = semantic_paragraphs(body)
+        if not paras:
+            continue
+
+        # 檢查快取 — 若所有段落都有快取則跳過
+        cache_keys = [f"{rel}::para{i}" for i in range(len(paras))]
+        if not rebuild and all(k in cache for k in cache_keys):
+            skipped += 1
+            continue
+
+        total_files += 1
+        title = str(fm.get("title", Path(rel).stem) or "")
+        summary = str(fm.get("summary", "") or "")
+        print(f"  [{total_files}] {rel} ({len(paras)} paras) ... ", end="", flush=True)
+
+        notes = generate_contextual_notes(rel, title, summary, body, paras, model=model)
+        valid_notes = sum(1 for n in notes if n)
+        total_notes += valid_notes
+        print(f"OK ({valid_notes} notes)")
+
+    print(f"\n🔮 The Illumination is complete.")
+    print(f"   {total_files} files illuminated, {total_notes} contextual notes woven.")
+    print(f"   {skipped} files already illuminated (skipped).")
+    print(f"   Cache: {CTX_CACHE.name}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Personal Brain DB 向量化工具")
-    parser.add_argument("--rebuild",   action="store_true", help="重建整個索引")
-    parser.add_argument("--query",     type=str, default="",  help="搜尋測試")
-    parser.add_argument("--top",       type=int, default=5,   help="回傳前 N 筆")
-    parser.add_argument("--type",      type=str, default="",  help="篩選類型：note/chat/bio")
+    parser.add_argument("--rebuild",       action="store_true", help="重建整個索引")
+    parser.add_argument("--query",         type=str, default="",  help="搜尋測試")
+    parser.add_argument("--top",           type=int, default=5,   help="回傳前 N 筆")
+    parser.add_argument("--type",          type=str, default="",  help="篩選類型：note/chat/bio")
+    parser.add_argument("--contextualize", action="store_true",
+                        help="The Illumination — 生成語境化段落摘要（Contextual Retrieval）")
+    parser.add_argument("--ctx-model",     type=str, default=CTX_MODEL,
+                        help=f"Contextual note 使用的 Ollama 模型（預設 {CTX_MODEL}）")
     args = parser.parse_args()
 
     if args.query:
         results = search(args.query, args.top, args.type)
         if not results:
+            print("The waters are still. No echoes found.")
             return
         print(f"\n搜尋：「{args.query}」\n{'='*55}")
         for i, r in enumerate(results, 1):
-            print(f"\n#{i} 相關度 {r['score']:.3f} | {r['type']} | {r['date']}")
+            actr_info = f"  ACT-R={r['actr_score']:+.3f}" if "actr_score" in r else ""
+            print(f"\n#{i} 相關度 {r['score']:.3f}{actr_info} | {r['type']} | {r['date']}")
             print(f"   標題：{r['title']}")
             print(f"   路徑：{r['path']}")
             print(f"   摘要：{r['summary'][:100]}")
             print(f"   片段：{r['snippet'][:150]}")
+        return
+
+    if args.contextualize:
+        contextualize_all(model=args.ctx_model, rebuild=args.rebuild)
         return
 
     build_index(rebuild=args.rebuild)

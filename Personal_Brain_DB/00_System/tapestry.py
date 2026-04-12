@@ -244,6 +244,122 @@ def graph_search(
     return [path for path, _ in ranked]
 
 
+# ─── PPR Spreading Activation（傳播激發檢索）─────────────────
+#
+# Personalized PageRank：以搜尋結果為 seed，在圖譜中擴散，
+# 發現語義隱含相關但未被向量/BM25 直接命中的記憶。
+#
+# 流程：Kuzu 子圖 → NetworkX DiGraph → PPR → 排序
+
+def _extract_subgraph_to_nx(conn: kuzu.Connection):
+    """
+    從 Kuzu 提取完整圖到 NetworkX DiGraph。
+    節點格式："{type}::{name}" (e.g. "Memory::30_Journal/2025/250604.md")
+    """
+    import networkx as nx
+
+    G = nx.DiGraph()
+
+    # 提取所有節點
+    for label, key in [("Memory", "path"), ("Person", "name"),
+                       ("Location", "name"), ("Event", "name"), ("Period", "name")]:
+        try:
+            result = conn.execute(f"MATCH (n:{label}) RETURN n.{key} AS k")
+            df = result.get_as_df()
+            for val in df["k"].tolist():
+                G.add_node(f"{label}::{val}", type=label, name=val)
+        except Exception:
+            continue
+
+    # 提取所有邊
+    rel_queries = [
+        ("mem_person",   "Memory", "path", "Person",   "name"),
+        ("mem_location", "Memory", "path", "Location", "name"),
+        ("mem_event",    "Memory", "path", "Event",    "name"),
+        ("mem_period",   "Memory", "path", "Period",   "name"),
+        ("event_loc",    "Event",  "name", "Location", "name"),
+        ("person_loc",   "Person", "name", "Location", "name"),
+        ("person_event", "Person", "name", "Event",    "name"),
+    ]
+    for rel, from_label, from_key, to_label, to_key in rel_queries:
+        try:
+            result = conn.execute(
+                f"MATCH (a:{from_label})-[:{rel}]->(b:{to_label}) "
+                f"RETURN a.{from_key} AS src, b.{to_key} AS dst"
+            )
+            df = result.get_as_df()
+            for _, row in df.iterrows():
+                src_id = f"{from_label}::{row['src']}"
+                dst_id = f"{to_label}::{row['dst']}"
+                # 雙向邊，讓 PPR 能雙向擴散
+                G.add_edge(src_id, dst_id)
+                G.add_edge(dst_id, src_id)
+        except Exception:
+            continue
+
+    return G
+
+
+def spreading_activation(
+    seed_paths: list[str],
+    conn: kuzu.Connection | None = None,
+    top_k: int = 15,
+    alpha: float = 0.15,
+) -> list[tuple[str, float]]:
+    """
+    PPR Spreading Activation — 從 seed 記憶出發，在圖譜中擴散。
+
+    Args:
+        seed_paths: 種子記憶路徑（通常是向量搜尋的 top-K）
+        conn: Kuzu connection（可選，不提供則自動建立）
+        top_k: 回傳前 K 個結果
+        alpha: PPR damping（0.15 = 85% 機率繼續擴散）
+
+    Returns:
+        [(memory_path, ppr_score), ...] — 排除 seed 自身
+    """
+    import networkx as nx
+
+    _own = conn is None
+    if _own:
+        if not TAPESTRY_DB.exists():
+            return []
+        conn = get_conn()
+
+    G = _extract_subgraph_to_nx(conn)
+    if G.number_of_nodes() == 0:
+        return []
+
+    # 建立 personalization 向量：seed 節點均分權重
+    personalization = {}
+    for path in seed_paths:
+        node_id = f"Memory::{path}"
+        if node_id in G:
+            personalization[node_id] = 1.0
+
+    if not personalization:
+        return []
+
+    # 執行 Personalized PageRank
+    try:
+        ppr_scores = nx.pagerank(G, alpha=alpha, personalization=personalization,
+                                 max_iter=100, tol=1e-6)
+    except nx.PowerIterationFailedConvergence:
+        ppr_scores = nx.pagerank(G, alpha=alpha, personalization=personalization,
+                                 max_iter=200, tol=1e-4)
+
+    # 過濾：只取 Memory 節點，排除 seed 自身
+    seed_set = set(f"Memory::{p}" for p in seed_paths)
+    memory_scores = [
+        (node_id.split("::", 1)[1], score)
+        for node_id, score in ppr_scores.items()
+        if node_id.startswith("Memory::") and node_id not in seed_set
+    ]
+
+    memory_scores.sort(key=lambda x: -x[1])
+    return memory_scores[:top_k]
+
+
 # ─── Backfill：從現有記憶庫重建 Tapestry ──────────────────────
 
 def backfill_from_vault(verbose: bool = True) -> tuple[int, int]:
@@ -373,6 +489,7 @@ if __name__ == "__main__":
     ap.add_argument("--backfill", action="store_true", help="從現有記憶庫重建 Tapestry")
     ap.add_argument("--stats",    action="store_true", help="顯示統計")
     ap.add_argument("--search",   type=str, default="", help="圖搜尋測試（逗號分隔關鍵詞）")
+    ap.add_argument("--ppr",      type=str, default="", help="PPR 擴散測試（逗號分隔 memory path）")
     args = ap.parse_args()
 
     if args.backfill:
@@ -396,6 +513,16 @@ if __name__ == "__main__":
         else:
             for i, path in enumerate(paths[:10], 1):
                 print(f"  #{i} {path}")
+
+    elif args.ppr:
+        seeds = [t.strip() for t in args.ppr.split(",") if t.strip()]
+        results = spreading_activation(seeds, top_k=10)
+        print(f"[TAPESTRY] PPR Spreading Activation from {len(seeds)} seeds:")
+        if not results:
+            print("  The waters are still. No echoes found.")
+        else:
+            for i, (path, score) in enumerate(results, 1):
+                print(f"  #{i} PPR={score:.6f}  {path}")
 
     else:
         ap.print_help()
