@@ -46,6 +46,8 @@ Mnemosyne（泰坦神，記憶女神）
 | 分析 / 洞察 | Augury, Omen, Revelation | gap analysis = "The Call of the Muses" |
 | 刪除 / 歸檔 | Lethe, Oblivion | 歸檔 = "Surrendered to Lethe" |
 | 定期任務 | Rite, Vigil, Offering | 每日入庫 = "Daily Offering" |
+| 認知衰減 / 存取紀錄 | Chronicle, Mneme | access log = "The Chronicle of Mneme" |
+| 語境化增強 | Illumination, Revelation | contextual notes = "The Illumination" |
 | 錯誤 / 失敗 | Hubris, Nemesis | retry = "Defying Nemesis" |
 
 ---
@@ -100,6 +102,29 @@ The Vault（Personal_Brain_DB/）
 
 搜尋架構（vectorize.py）
     Dense（ChromaDB）+ BM25 + Tapestry Graph → 三路 RRF 合併
+    → ACT-R 認知衰減重排（The Chronicle of Mneme）
+
+The Chronicle of Mneme（mneme_weight.py）
+    — ACT-R 認知衰減系統：記憶的激活強度 = f(使用頻率, 時間距離)
+    — access_log: chronicle.db（SQLite），記錄每次搜尋/閱讀的存取
+    — 公式：A_i = ln(Σ t_k^{-0.5})
+    — 整合到 search pipeline 作為 rerank bonus
+
+The Illumination（vectorize.py --contextualize）
+    — Contextual Retrieval：為每個段落 chunk 加上語境化摘要
+    — 解決切片斷章取義問題，讓 embedding 捕捉全局脈絡
+    — 快取：contextual_cache.json（避免重複 LLM 呼叫）
+
+PPR Spreading Activation（tapestry.py）
+    — Personalized PageRank：以搜尋結果為 seed，在圖譜中擴散
+    — 發現語義隱含相關但未被向量/BM25 直接命中的記憶
+    — 流程：Kuzu 子圖 → NetworkX DiGraph → PPR → RRF 合併
+
+The Rite of Slumber（slumber.py）
+    — 記憶鞏固機制：定期整理記憶庫
+    — Reflection：從近期記憶提煉高層次洞察 → 10_Profile/reflections/
+    — Hebbian Learning：共現記憶強化 co_recalled 邊
+    — The Lethe Protocol：策略性遺忘（dormant 標記），不刪除可恢復
 ```
 
 ### YAML enrichment 欄位
@@ -130,6 +155,51 @@ python3 00_System/enrich.py --weave-tapestry   # 同等效果
 python3 00_System/tapestry.py --stats
 python3 00_System/tapestry.py --search "Tokyo,friend-A"
 python3 00_System/tapestry.py --backfill
+```
+
+### The Chronicle CLI 用法
+
+```bash
+# 存取紀錄統計
+python3 00_System/mneme_weight.py --stats
+
+# 最活躍的 10 個記憶
+python3 00_System/mneme_weight.py --top 10
+
+# 查詢特定記憶的 ACT-R 激活分數
+python3 00_System/mneme_weight.py --score "30_Journal/2025/250604.md"
+```
+
+### Contextual Retrieval CLI 用法
+
+```bash
+# The Illumination — 為所有段落生成語境化摘要
+python3 00_System/vectorize.py --contextualize
+
+# 指定模型 + 重建所有
+python3 00_System/vectorize.py --contextualize --ctx-model gemma3:4b --rebuild
+
+# 生成語境化摘要後重建索引（完整流程）
+python3 00_System/vectorize.py --contextualize && python3 00_System/vectorize.py --rebuild
+```
+
+### The Rite of Slumber CLI 用法
+
+```bash
+# 執行完整鞏固（三個儀式全做）
+python3 00_System/slumber.py
+
+# 僅反射（從近期記憶提煉洞察）
+python3 00_System/slumber.py --reflect --days 14
+
+# 僅赫布學習（共現記憶強化）
+python3 00_System/slumber.py --hebbian
+
+# 策略性遺忘（預覽模式）
+python3 00_System/slumber.py --forget --dry-run
+
+# 鞏固統計
+python3 00_System/slumber.py --stats
 ```
 
 ---
