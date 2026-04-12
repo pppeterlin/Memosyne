@@ -1,0 +1,33 @@
+# Git
+.git/
+.gitignore
+
+# Personal memory data (mounted as volumes)
+Personal_Brain_DB/10_Profile/
+Personal_Brain_DB/20_AI_Chats/
+Personal_Brain_DB/30_Journal/
+Personal_Brain_DB/40_Projects/
+Personal_Brain_DB/50_Knowledge/
+spring/
+
+# Generated databases (mounted as volumes)
+Personal_Brain_DB/00_System/chroma_db/
+Personal_Brain_DB/00_System/tapestry_db/
+Personal_Brain_DB/00_System/bm25_index.pkl
+Personal_Brain_DB/00_System/contextual_cache.json
+Personal_Brain_DB/00_System/flashrank_cache/
+Personal_Brain_DB/00_System/index.json
+Personal_Brain_DB/00_System/augury_reports/
+
+# Environment & secrets
+.env
+.claude/
+_internal/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# OS
+.DS_Store

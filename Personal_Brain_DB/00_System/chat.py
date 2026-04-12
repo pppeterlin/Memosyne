@@ -3,7 +3,7 @@
 Personal Brain DB — RAG Chat
 支援兩種後端：
   local  — 本地 Ollama（gemma4:26b）
-  cloud  — 雲端 Gemini API（GEMINI_API_KEY from .env）
+  cloud  — 雲端 Gemini API（LLM_API_KEY from .env）
 
 Pipeline：
   [Query Planner] → 多路向量搜尋（top N） → FlashRank 精排（留 top K） → 送進 LLM
@@ -529,14 +529,14 @@ def chat_once_cloud(
 # ─── 後端選擇 ────────────────────────────────────────────────
 
 def load_gemini_client():
-    """從 .env 讀取 GEMINI_API_KEY，初始化 google.genai.Client。"""
+    """從 .env 讀取 LLM_API_KEY，初始化 google.genai.Client。"""
     from dotenv import load_dotenv
     load_dotenv(ENV_FILE)
 
-    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    api_key = os.environ.get("LLM_API_KEY", "").strip()
     if not api_key:
-        print(f"[ERROR] 找不到 GEMINI_API_KEY（讀取自 {ENV_FILE}）")
-        print("  請確認 .env 裡有：GEMINI_API_KEY=your_key_here")
+        print(f"[ERROR] 找不到 LLM_API_KEY（讀取自 {ENV_FILE}）")
+        print("  請確認 .env 裡有：LLM_API_KEY=your_key_here")
         sys.exit(1)
 
     from google import genai
