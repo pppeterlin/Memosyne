@@ -1,0 +1,57 @@
+# ── Memosyne Docker Compose ──
+#
+# Usage:
+#   docker compose up memosyne                        # Main app only (bring your own Ollama)
+#   docker compose --profile local-llm up             # App + Ollama together
+#   docker compose run memosyne python3 Personal_Brain_DB/00_System/ingest.py
+#   docker compose run memosyne python3 Personal_Brain_DB/00_System/vectorize.py --rebuild
+
+services:
+  memosyne:
+    build: .
+    container_name: memosyne
+    env_file: .env
+    environment:
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+    volumes:
+      # ── Data ingestion drop zone ──
+      - ./spring:/app/spring
+
+      # ── Memory vault (personal data, not in git) ──
+      - ./Personal_Brain_DB/10_Profile:/app/Personal_Brain_DB/10_Profile
+      - ./Personal_Brain_DB/20_AI_Chats:/app/Personal_Brain_DB/20_AI_Chats
+      - ./Personal_Brain_DB/30_Journal:/app/Personal_Brain_DB/30_Journal
+      - ./Personal_Brain_DB/40_Projects:/app/Personal_Brain_DB/40_Projects
+      - ./Personal_Brain_DB/50_Knowledge:/app/Personal_Brain_DB/50_Knowledge
+
+      # ── Generated databases & indices ──
+      - memosyne-chroma:/app/Personal_Brain_DB/00_System/chroma_db
+      - memosyne-tapestry:/app/Personal_Brain_DB/00_System/tapestry_db
+      - memosyne-flashrank:/app/Personal_Brain_DB/00_System/flashrank_cache
+      - ./Personal_Brain_DB/00_System/bm25_index.pkl:/app/Personal_Brain_DB/00_System/bm25_index.pkl
+      - ./Personal_Brain_DB/00_System/contextual_cache.json:/app/Personal_Brain_DB/00_System/contextual_cache.json
+    stdin_open: true
+    tty: true
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: memosyne-ollama
+    profiles: ["local-llm"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - memosyne-ollama-models:/root/.ollama
+    # Uncomment below for GPU support (NVIDIA):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+volumes:
+  memosyne-chroma:
+  memosyne-tapestry:
+  memosyne-flashrank:
+  memosyne-ollama-models:
