@@ -53,7 +53,7 @@ def _init_schema(conn: kuzu.Connection) -> None:
     stmts = [
         # Node tables
         "CREATE NODE TABLE IF NOT EXISTS Memory(path STRING, PRIMARY KEY(path))",
-        "CREATE NODE TABLE IF NOT EXISTS Person(name STRING, PRIMARY KEY(name))",
+        "CREATE NODE TABLE IF NOT EXISTS Person(name STRING, aliases STRING[], PRIMARY KEY(name))",
         "CREATE NODE TABLE IF NOT EXISTS Location(name STRING, PRIMARY KEY(name))",
         "CREATE NODE TABLE IF NOT EXISTS Event(name STRING, PRIMARY KEY(name))",
         "CREATE NODE TABLE IF NOT EXISTS Period(name STRING, PRIMARY KEY(name))",
@@ -68,6 +68,12 @@ def _init_schema(conn: kuzu.Connection) -> None:
     ]
     for s in stmts:
         conn.execute(s)
+
+    # Migration: add aliases column to existing Person table
+    try:
+        conn.execute("ALTER TABLE Person ADD aliases STRING[] DEFAULT []")
+    except Exception:
+        pass  # column already exists
 
 
 def get_conn() -> kuzu.Connection:
@@ -90,6 +96,178 @@ def _merge_memory(conn: kuzu.Connection, path: str) -> None:
 def _merge_rel(conn: kuzu.Connection, cypher: str, params: dict) -> None:
     """用 MERGE 建立關係（節點必須已存在）。"""
     conn.execute(cypher, params)
+
+
+# ─── Person 節點管理（The Naming Rite 用）─────────────────────
+
+def get_all_persons(conn: kuzu.Connection | None = None) -> list[dict]:
+    """回傳所有 Person 節點 [{name, aliases}, ...]。"""
+    _own = conn is None
+    if _own:
+        conn = get_conn()
+    try:
+        r = conn.execute("MATCH (p:Person) RETURN p.name AS name, p.aliases AS aliases")
+        df = r.get_as_df()
+        results = []
+        for _, row in df.iterrows():
+            aliases = row["aliases"] if row["aliases"] is not None else []
+            if not isinstance(aliases, list):
+                aliases = []
+            results.append({"name": row["name"], "aliases": aliases})
+        return results
+    except Exception:
+        return []
+
+
+def get_alias_map(conn: kuzu.Connection | None = None) -> dict[str, str]:
+    """
+    建立 alias → canonical_name 的查找表。
+    包含正規化後的名稱（lowercase / 去連字號 / 去底線 / strip）。
+    """
+    persons = get_all_persons(conn)
+    alias_map: dict[str, str] = {}
+    for p in persons:
+        canonical = p["name"]
+        # 自身的正規化形式也加入
+        alias_map[canonical.lower().replace("-", "").replace("_", "").strip()] = canonical
+        for alias in p["aliases"]:
+            if isinstance(alias, str) and alias:
+                alias_map[alias.lower().replace("-", "").replace("_", "").strip()] = canonical
+                alias_map[alias] = canonical
+    return alias_map
+
+
+def _person_edge_count(conn: kuzu.Connection, name: str) -> int:
+    """計算某 Person 節點的總邊數（用於選擇 canonical name）。"""
+    count = 0
+    for query in [
+        "MATCH (:Memory)-[r:mem_person]->(p:Person {name: $n}) RETURN COUNT(r) AS c",
+        "MATCH (p:Person {name: $n})-[r:person_loc]->(:Location) RETURN COUNT(r) AS c",
+        "MATCH (p:Person {name: $n})-[r:person_event]->(:Event) RETURN COUNT(r) AS c",
+    ]:
+        try:
+            r = conn.execute(query, {"n": name})
+            count += int(r.get_as_df()["c"].iloc[0])
+        except Exception:
+            continue
+    return count
+
+
+def merge_persons(
+    conn: kuzu.Connection,
+    canonical: str,
+    to_merge: list[str],
+) -> int:
+    """
+    將 to_merge 中的 Person 節點合併到 canonical。
+    邊重導 → aliases 更新 → 刪除舊節點。
+    回傳重導的邊數。
+    """
+    redirected = 0
+
+    # 確保 canonical 節點存在
+    _merge_node(conn, "Person", canonical)
+
+    for alias_name in to_merge:
+        if alias_name == canonical:
+            continue
+
+        # ── 重導 mem_person 邊（Memory → Person）──────────────
+        try:
+            r = conn.execute(
+                "MATCH (m:Memory)-[:mem_person]->(p:Person {name: $old}) "
+                "RETURN m.path AS mp", {"old": alias_name}
+            )
+            for mp in r.get_as_df()["mp"].tolist():
+                conn.execute(
+                    "MATCH (m:Memory {path: $mp}), (p:Person {name: $new}) "
+                    "MERGE (m)-[:mem_person]->(p)",
+                    {"mp": mp, "new": canonical}
+                )
+                redirected += 1
+        except Exception:
+            pass
+
+        # ── 重導 person_loc 邊（Person → Location）───────────
+        try:
+            r = conn.execute(
+                "MATCH (p:Person {name: $old})-[r:person_loc]->(l:Location) "
+                "RETURN l.name AS ln, r.evidence AS ev", {"old": alias_name}
+            )
+            df = r.get_as_df()
+            for _, row in df.iterrows():
+                ev = row["ev"] if row["ev"] else ""
+                conn.execute(
+                    "MATCH (p:Person {name: $new}), (l:Location {name: $ln}) "
+                    "MERGE (p)-[:person_loc {evidence: $ev}]->(l)",
+                    {"new": canonical, "ln": row["ln"], "ev": ev}
+                )
+                redirected += 1
+        except Exception:
+            pass
+
+        # ── 重導 person_event 邊（Person → Event）────────────
+        try:
+            r = conn.execute(
+                "MATCH (p:Person {name: $old})-[:person_event]->(e:Event) "
+                "RETURN e.name AS en", {"old": alias_name}
+            )
+            for en in r.get_as_df()["en"].tolist():
+                conn.execute(
+                    "MATCH (p:Person {name: $new}), (e:Event {name: $en}) "
+                    "MERGE (p)-[:person_event]->(e)",
+                    {"new": canonical, "en": en}
+                )
+                redirected += 1
+        except Exception:
+            pass
+
+        # ── 刪除舊節點的所有邊，再刪節點 ─────────────────────
+        for rel in ["mem_person", "person_loc", "person_event"]:
+            try:
+                conn.execute(
+                    f"MATCH (p:Person {{name: $old}})-[r:{rel}]-() DELETE r",
+                    {"old": alias_name}
+                )
+            except Exception:
+                pass
+            try:
+                conn.execute(
+                    f"MATCH ()-[r:{rel}]->(p:Person {{name: $old}}) DELETE r",
+                    {"old": alias_name}
+                )
+            except Exception:
+                pass
+        try:
+            conn.execute("MATCH (p:Person {name: $old}) DELETE p", {"old": alias_name})
+        except Exception:
+            pass
+
+    # ── 更新 canonical 的 aliases ─────────────────────────────
+    existing = []
+    try:
+        r = conn.execute(
+            "MATCH (p:Person {name: $n}) RETURN p.aliases AS a", {"n": canonical}
+        )
+        a = r.get_as_df()["a"].iloc[0]
+        if isinstance(a, list):
+            existing = a
+    except Exception:
+        pass
+
+    all_aliases = list(set(existing + to_merge))
+    if canonical in all_aliases:
+        all_aliases.remove(canonical)
+
+    try:
+        conn.execute(
+            "MATCH (p:Person {name: $n}) SET p.aliases = $a",
+            {"n": canonical, "a": all_aliases}
+        )
+    except Exception:
+        pass
+
+    return redirected
 
 
 # ─── 主要織入函式 ─────────────────────────────────────────────
@@ -305,15 +483,20 @@ def spreading_activation(
     conn: kuzu.Connection | None = None,
     top_k: int = 15,
     alpha: float = 0.15,
+    seed_entities: list[str] | None = None,
 ) -> list[tuple[str, float]]:
     """
-    PPR Spreading Activation — 從 seed 記憶出發，在圖譜中擴散。
+    PPR Spreading Activation — HippoRAG 2 升級版。
+
+    同時接受 passage node（Memory）和 phrase node（Person/Location/Event）
+    作為 seed，在圖譜中擴散。擴散後只取 Memory 節點分數。
 
     Args:
         seed_paths: 種子記憶路徑（通常是向量搜尋的 top-K）
         conn: Kuzu connection（可選，不提供則自動建立）
         top_k: 回傳前 K 個結果
         alpha: PPR damping（0.15 = 85% 機率繼續擴散）
+        seed_entities: 種子實體名稱（HippoRAG 2：phrase node seeds）
 
     Returns:
         [(memory_path, ppr_score), ...] — 排除 seed 自身
@@ -330,12 +513,24 @@ def spreading_activation(
     if G.number_of_nodes() == 0:
         return []
 
-    # 建立 personalization 向量：seed 節點均分權重
+    # 建立 personalization 向量：passage + phrase seeds
     personalization = {}
+
+    # Passage seeds（Memory 節點）
     for path in seed_paths:
         node_id = f"Memory::{path}"
         if node_id in G:
             personalization[node_id] = 1.0
+
+    # Phrase seeds（Entity 節點）— HippoRAG 2
+    if seed_entities:
+        for entity in seed_entities:
+            # 嘗試所有實體類型
+            for label in ("Person", "Location", "Event", "Period"):
+                node_id = f"{label}::{entity}"
+                if node_id in G:
+                    personalization[node_id] = 1.0
+                    break
 
     if not personalization:
         return []

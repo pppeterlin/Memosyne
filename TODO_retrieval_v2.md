@@ -25,29 +25,29 @@
 ## Phase 1 — 地基（先做，否則後面無法驗證）
 
 ### 1.1 The Augury Benchmark（**最優先**）
-- [ ] 建立 `Personal_Brain_DB/00_System/benchmark/` 目錄
-- [ ] 手動撰寫 `golden_set.yaml`：9 位繆思各 5–10 題，含 `query` / `expected_files` / `type` (factual/multi_hop/temporal/reasoning)
-- [ ] 實作 `augury_benchmark.py`：
-  - [ ] 讀取 golden set，對每題跑 `search()` 取 top-K
-  - [ ] 計算 Recall@K、MRR、Precision@5、多跳完整率、時間正確率
-  - [ ] 輸出 `reports/YYYY-MM-DD_retrieval_report.md`，跟前次結果 diff
-- [ ] 把當前 baseline 跑過記錄下來（所有後續改動以此為對照基準）
+- [x] 建立 `Personal_Brain_DB/00_System/benchmark/` 目錄
+- [x] 實作 `augury_benchmark.py`（Recall@K / MRR / P@5 / Full Recall / Abstention / 自動 diff 上一份報告）
+- [x] `golden_set.yaml` 模板（含各繆思範例題）
+- [x] `benchmark/README.md` 使用說明
+- [ ] **[使用者任務]** 用真實記憶填寫 `golden_set.yaml`，每位繆思 5–10 題
+- [ ] **[使用者任務]** 跑第一次 baseline：`python3 augury_benchmark.py`
+- [ ] **[使用者任務]** commit baseline 報告作為對照基準
 
 ### 1.2 The Naming Rite（實體正規化）
-- [ ] 在 `slumber.py` 新增 `--naming` 儀式
-- [ ] 收集所有 `person` 節點 → 名稱正規化（lowercase / 去連字號 / 去空白）
-- [ ] 對正規化字串做 embedding 相似度聚類（threshold 0.85）
-- [ ] LLM 二次確認候選合併對
-- [ ] 合併節點：邊重導 + `aliases[]` + `merged_from[]` + `merged_at`
-- [ ] 寫入 reversible merge log（`naming_log.jsonl`）
-- [ ] enrich.py 新入庫時即時 alias 偵測（查既有 aliases 表）
+- [x] 在 `slumber.py` 新增 `--naming` 儀式
+- [x] 收集所有 `person` 節點 → 名稱正規化（lowercase / 去連字號 / 去空白）
+- [x] 對正規化字串做 embedding 相似度聚類（threshold 0.85）
+- [x] LLM 二次確認候選合併對
+- [x] 合併節點：邊重導 + `aliases[]` + `merged_from[]` + `merged_at`
+- [x] 寫入 reversible merge log（`naming_log.jsonl`）
+- [x] enrich.py 新入庫時即時 alias 偵測（查既有 aliases 表）
 
 ### 1.3 Parent-Child 切片（Small-to-Big）
-- [ ] 修改 `ingest.py` chunker：每個 chunk metadata 加 `parent_section_id` / `parent_doc_id` / `sibling_order`
-- [ ] 回填既有 chunks（migration script）
-- [ ] 修改 `vectorize.search()`：命中 chunk 後可選擇回傳 parent section（新增 `return_parent=True` 參數）
-- [ ] 更新 MCP server `query_memory` 暴露此參數
-- [ ] 跑 Augury benchmark 對比
+- [x] 修改 `ingest.py` chunker：每個 chunk metadata 加 `parent_section_id` / `parent_doc_id` / `sibling_order`
+- [x] 回填既有 chunks（migration script）
+- [x] 修改 `vectorize.search()`：命中 chunk 後可選擇回傳 parent section（新增 `return_parent=True` 參數）
+- [x] 更新 MCP server `query_memory` 暴露此參數
+- [ ] **[使用者任務]** 跑 Augury benchmark 對比
 
 ---
 
@@ -68,16 +68,16 @@
 - [ ] Augury 對比
 
 ### 2.3 HippoRAG 2（短語+段落共圖）
-- [ ] 修改 `tapestry.py`：PPR seed 同時接受 phrase node（entity）與 passage node（memory）
-- [ ] 擴散後回傳僅取 passage node 分數作為 memory 貢獻
-- [ ] 保持向後相容（舊 PPR 調用為 legacy path）
-- [ ] Augury 對比（特別注意多跳題）
+- [x] 修改 `tapestry.py`：PPR seed 同時接受 phrase node（entity）與 passage node（memory）
+- [x] 擴散後回傳僅取 passage node 分數作為 memory 貢獻
+- [x] 保持向後相容（舊 PPR 調用為 legacy path）
+- [ ] **[使用者任務]** Augury 對比（特別注意多跳題）
 
 ### 2.4 時間擴展（regex first）
-- [ ] 實作 `temporal_parser.py`：regex 抽取「2023 年」「去年夏天」「上個月」→ 具體日期範圍
-- [ ] `search()` 加入 date 過濾/加權
-- [ ] 時間距離 bonus（命中記憶日期越接近查詢錨點 → 加分）
-- [ ] Augury temporal 類題對比
+- [x] 實作 `temporal_parser.py`：regex 抽取「2023 年」「去年夏天」「上個月」→ 具體日期範圍
+- [x] `search()` 加入 date 過濾/加權
+- [x] 時間距離 bonus（命中記憶日期越接近查詢錨點 → 加分）
+- [ ] **[使用者任務]** Augury temporal 類題對比
 
 ---
 
