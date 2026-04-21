@@ -220,4 +220,40 @@ personal-memory/
 
 ---
 
-*最後更新：2026-04-12*
+## 致謝與參考文獻（Acknowledgements & References）
+
+Memosyne 站在許多優秀研究與開源專案的肩膀上。以下是架構中採用的技術、以及 [優化方案_索引與保存管理.md](優化方案_索引與保存管理.md) 規劃的 v2 升級所依據的文獻。該有的致敬不能少。
+
+### 已實作技術的基礎文獻
+
+- **ACT-R 認知衰減** — Anderson, J. R. 等. *An integrated theory of the mind.* Psychological Review (2004)。基礎激活公式 `B_i = ln(Σ t_k^{-d})` 驅動 The Chronicle of Mneme。
+- **Contextual Retrieval** — Anthropic (2024). [Introducing Contextual Retrieval](https://www.anthropic.com/news/contextual-retrieval)。啟發 The Illumination。
+- **Reciprocal Rank Fusion (RRF)** — Cormack 等, SIGIR (2009)。
+- **BM25** — Robertson & Zaragoza, Foundations and Trends in IR (2009)。
+- **Personalized PageRank** — Haveliwala, WWW (2002)。Tapestry 擴散激發的核心演算法。
+- **HippoRAG** — Gutiérrez 等. [*HippoRAG: Neurobiologically Inspired Long-Term Memory for LLMs.*](https://arxiv.org/abs/2405.14831) NeurIPS (2024)。
+
+### Retrieval v2 參考研究
+
+- **HippoRAG 2** — [arxiv 2502.14802](https://arxiv.org/abs/2502.14802) (2025)。短語+段落統一圖 PPR。
+- **Zep / Graphiti** — [arxiv 2501.13956](https://arxiv.org/abs/2501.13956) (2025)。雙時序邊與邊失效機制。開源：[getzep/graphiti](https://github.com/getzep/graphiti)。
+- **Mem0** — [arxiv 2504.19413](https://arxiv.org/abs/2504.19413) (2025)。CRUD 式記憶操作與衝突解決。
+- **A-MEM** — [arxiv 2502.12110](https://arxiv.org/abs/2502.12110) (2025)。Zettelkasten 式記憶演化。
+- **LightRAG** — [arxiv 2410.05779](https://arxiv.org/abs/2410.05779) (2024)。增量式雙層級圖更新。
+- **GraphRAG** — [arxiv 2404.16130](https://arxiv.org/abs/2404.16130) Microsoft Research (2024)。
+- **HyDE** — [arxiv 2212.10496](https://arxiv.org/abs/2212.10496) ACL (2023)。The Triple Echo 的 HyQE 視角依據。
+- **Self-RAG** — [arxiv 2310.11511](https://arxiv.org/abs/2310.11511) ICLR (2024)。The Mirror of Truth 的依據。
+- **ColBERT / ColBERTv2** — [arxiv 2004.12832](https://arxiv.org/abs/2004.12832) SIGIR (2020)。
+- **MemGPT / Letta** — [arxiv 2310.08560](https://arxiv.org/abs/2310.08560) (2023)。
+- **LongMemEval** — [arxiv 2410.10813](https://arxiv.org/abs/2410.10813) (2024)。The Augury Benchmark 的評估方法論。
+- **RAGAS** — [docs.ragas.io](https://docs.ragas.io) EACL (2024)。
+
+### 工具與函式庫
+
+- [ChromaDB](https://www.trychroma.com/) · [Kuzu](https://kuzudb.com/) · [NetworkX](https://networkx.org/) · [rank-bm25](https://github.com/dorianbrown/rank_bm25) · [sentence-transformers](https://www.sbert.net/) · [FastMCP](https://github.com/jlowin/fastmcp) · [Ollama](https://ollama.com/)
+
+若有未列出的引用來源，歡迎開 issue 補上 —— 引用不是裝飾，是該做的事。
+
+---
+
+*最後更新：2026-04-21*
