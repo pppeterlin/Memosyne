@@ -9,6 +9,12 @@ Memosyne is a **local-first personal memory infrastructure** that gives AI agent
 
 Built for the AI agent era: your memories become a queryable skill via MCP.
 
+## Core Premise
+
+AI capabilities compound every quarter, but no model — however powerful — can know *you* from a cold start. The texture of your life (who you've spent time with, what you've decided, how you've changed) lives scattered across journals, chats, and notes.
+
+**Start building your personal memory now, before the agent era fully arrives.** A vault built today is portable to every model that comes next, and the agents of tomorrow can plug into it to make decisions that are actually *yours* — not generic.
+
 ---
 
 ## Why Memosyne?
