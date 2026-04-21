@@ -232,6 +232,45 @@ def call_llm(title: str, content: str, model: str, filename_hint: list = None) -
 
 # ─── 驗證：只保留原文中出現的實體 ────────────────────────────
 
+def _load_alias_map() -> dict[str, str]:
+    """
+    從 Tapestry 載入 alias → canonical_name 查找表。
+    若 Tapestry 不可用則回傳空 dict（靜默降級）。
+    """
+    try:
+        from tapestry import get_alias_map
+        return get_alias_map()
+    except Exception:
+        return {}
+
+
+def resolve_person_aliases(enrichment: dict) -> dict:
+    """
+    The Naming Rite — 即時 alias 偵測。
+    將 enrichment 中的 person 名稱替換為 canonical name。
+    """
+    alias_map = _load_alias_map()
+    if not alias_map:
+        return enrichment
+
+    people = enrichment.get("entities", {}).get("people", [])
+    resolved = []
+    for person in people:
+        norm = person.lower().replace("-", "").replace("_", "").replace(" ", "").strip()
+        canonical = alias_map.get(norm) or alias_map.get(person)
+        resolved.append(canonical if canonical else person)
+
+    # 去重（不同別名可能解析到同一 canonical）
+    seen = set()
+    deduped = []
+    for p in resolved:
+        if p not in seen:
+            seen.add(p)
+            deduped.append(p)
+
+    enrichment["entities"]["people"] = deduped
+    return enrichment
+
 def validate_entities(enrichment: dict, original_text: str) -> dict:
     """
     Ground-truth preserving 驗證：
@@ -370,6 +409,7 @@ def enrich_all(model: str, rebuild: bool, dry_run: bool, target_file: str | None
         try:
             raw_enrichment  = call_llm(title, full_text, model, filename_hint=fname_hint)
             enrichment      = validate_entities(raw_enrichment, full_text)
+            enrichment      = resolve_person_aliases(enrichment)
             rewrite_file_with_enrichment(path, enrichment, dry_run)
 
             locs   = enrichment["entities"]["locations"]

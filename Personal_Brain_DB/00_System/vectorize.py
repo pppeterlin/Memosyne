@@ -130,6 +130,53 @@ def semantic_paragraphs(text: str) -> list[str]:
     return paras
 
 
+def section_aware_paragraphs(text: str) -> list[dict]:
+    """
+    Small-to-Big：段落切片 + 父段落追蹤。
+
+    以 H2 (##) 為 section 邊界，每個段落記錄：
+      - text: 段落文字
+      - section_id: 所屬 H2 標題（無 H2 則為 "_default"）
+      - section_text: 該 H2 下的完整文字（用於 return_parent）
+      - sibling_order: 在 section 內的順序（0-based）
+    """
+    # 先按 H2 切 section
+    sections: list[tuple[str, str]] = []  # (heading, body_text)
+    current_heading = "_default"
+    current_lines: list[str] = []
+
+    for line in text.split("\n"):
+        m = re.match(r'^##\s+(.+)', line)
+        if m:
+            # 儲存前一個 section
+            if current_lines:
+                sections.append((current_heading, "\n".join(current_lines)))
+            current_heading = m.group(1).strip()
+            current_lines = []
+        else:
+            current_lines.append(line)
+
+    if current_lines:
+        sections.append((current_heading, "\n".join(current_lines)))
+
+    # 對每個 section 內做段落切分
+    result: list[dict] = []
+    for heading, section_body in sections:
+        section_body_stripped = section_body.strip()
+        if not section_body_stripped:
+            continue
+        paras = semantic_paragraphs(section_body)
+        for order, para in enumerate(paras):
+            result.append({
+                "text": para,
+                "section_id": heading,
+                "section_text": section_body_stripped,
+                "sibling_order": order,
+            })
+
+    return result
+
+
 # ─── Chunk 建立 ──────────────────────────────────────────────
 
 def parse_enrichment(fm: dict) -> dict:
@@ -373,11 +420,13 @@ def build_chunks(rel_path: str, fm: dict, body: str) -> list[dict]:
             "meta": {**meta_base, "chunk_type": "summary", "chunk_index": 0},
         })
 
-    # ② 段落 chunks（paragraph-level）
+    # ② 段落 chunks（paragraph-level）— Small-to-Big
+    # 使用 section-aware 切片，每個 chunk 記錄 parent section 資訊
     # 若有 contextual notes 快取，注入到每個段落前方（Contextual Retrieval）
-    paras = semantic_paragraphs(body)
+    section_paras = section_aware_paragraphs(body)
     cache = _load_ctx_cache()
-    for i, para in enumerate(paras):
+    for i, sp in enumerate(section_paras):
+        para = sp["text"]
         ctx_key = f"{rel_path}::para{i}"
         ctx_note = cache.get(ctx_key, "")
         if ctx_note:
@@ -387,7 +436,14 @@ def build_chunks(rel_path: str, fm: dict, body: str) -> list[dict]:
         chunks.append({
             "id":   f"{rel_path}::para{i}",
             "text": injected,
-            "meta": {**meta_base, "chunk_type": "paragraph", "chunk_index": i + 1},
+            "meta": {
+                **meta_base,
+                "chunk_type":        "paragraph",
+                "chunk_index":       i + 1,
+                "parent_doc_id":     rel_path,
+                "parent_section_id": sp["section_id"],
+                "sibling_order":     sp["sibling_order"],
+            },
         })
 
     return chunks
@@ -717,10 +773,14 @@ def search_graph(query: str, top_k: int = 15, doc_type: str = "") -> list[dict]:
 
 
 def search(query: str, top_k: int = 5, doc_type: str = "",
-           record_access: bool = True) -> list[dict]:
+           record_access: bool = True, return_parent: bool = False) -> list[dict]:
     """
     三路 Hybrid search：Dense（ChromaDB）+ BM25 + Tapestry Graph → RRF 融合
     → ACT-R 認知衰減重排 → top_k 結果。
+
+    Args:
+        return_parent: 若為 True，將 snippet 替換為命中 chunk 所屬的完整 parent section
+                       （Small-to-Big：索引小片段，回傳大段落）
 
     降級策略：
     - 無 BM25 索引 → 跳過 BM25
@@ -746,13 +806,20 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
     else:
         results = _rrf_merge_multi(ranked_lists)
 
-    # ── PPR Spreading Activation（傳播激發補充）──
-    # 用現有搜尋結果作為 seed，從圖譜中發現隱藏關聯的記憶
+    # ── PPR Spreading Activation（HippoRAG 2 — 傳播激發補充）──
+    # 用現有搜尋結果 + query 實體作為 seed，在圖譜中擴散
     try:
         from tapestry import spreading_activation, TAPESTRY_DB
         if TAPESTRY_DB.exists():
             seed_paths = [r["path"] for r in results[:5]]
-            ppr_results = spreading_activation(seed_paths, top_k=FETCH)
+            # HippoRAG 2: 從 query 提取實體作為 phrase node seeds
+            query_entities = [
+                w for w in re.findall(r'[\u4e00-\u9fff]{2,}|[a-zA-Z][\w-]+', query)
+                if len(w) >= 2
+            ]
+            ppr_results = spreading_activation(
+                seed_paths, top_k=FETCH, seed_entities=query_entities
+            )
             if ppr_results:
                 # 從 BM25 metas 取 metadata
                 _, _, bm25_metas, _ = load_bm25()
@@ -785,6 +852,15 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
 
     results = results[:top_k]
 
+    # ── 時間距離加權（The Unfolding Question）──
+    try:
+        from temporal_parser import extract_time_range, apply_temporal_rerank
+        time_range = extract_time_range(query)
+        if time_range:
+            results = apply_temporal_rerank(results, time_range)
+    except ImportError:
+        pass
+
     # ── ACT-R 認知衰減重排（The Chronicle of Mneme）──
     try:
         from mneme_weight import actr_rerank
@@ -799,6 +875,61 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
             _record([r["path"] for r in results], source="search")
         except ImportError:
             pass
+
+    # ── Small-to-Big：展開 parent section ──
+    if return_parent:
+        results = _expand_parent_sections(results)
+
+    return results
+
+
+def _expand_parent_sections(results: list[dict]) -> list[dict]:
+    """
+    Small-to-Big 展開：將每個結果的 snippet 替換為其所屬的完整 parent section。
+    透過 ChromaDB metadata 中的 parent_section_id 找到對應 section，
+    再從原始檔案中提取完整文字。
+    """
+    _, col = get_collection()
+
+    for r in results:
+        path = r.get("path", "")
+        if not path:
+            continue
+
+        # 從 ChromaDB 查找該 path 的 chunk metadata，取得 parent_section_id
+        try:
+            chunk_results = col.get(
+                where={"$and": [{"path": {"$eq": path}}, {"chunk_type": {"$eq": "paragraph"}}]},
+                include=["metadatas"],
+            )
+            if not chunk_results["metadatas"]:
+                continue
+
+            section_id = chunk_results["metadatas"][0].get("parent_section_id", "_default")
+        except Exception:
+            section_id = "_default"
+
+        # 從原始檔案讀取 parent section
+        try:
+            file_path = BASE / path
+            if not file_path.exists():
+                continue
+            content = file_path.read_text(encoding="utf-8")
+            _, body = parse_frontmatter(content)
+
+            section_paras = section_aware_paragraphs(body)
+            # 收集同一 section 的所有段落
+            section_texts = [
+                sp["text"] for sp in section_paras
+                if sp["section_id"] == section_id
+            ]
+            if section_texts:
+                heading = f"## {section_id}\n\n" if section_id != "_default" else ""
+                r["parent_section"] = heading + "\n\n".join(section_texts)
+            else:
+                r["parent_section"] = r.get("snippet", "")
+        except Exception:
+            r["parent_section"] = r.get("snippet", "")
 
     return results
 

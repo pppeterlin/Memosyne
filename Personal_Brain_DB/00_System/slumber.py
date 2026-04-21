@@ -409,8 +409,223 @@ def strategic_forgetting(
 
 
 # ═══════════════════════════════════════════════════════════════
-#  統計
+#  4. The Naming Rite — 實體正規化（Entity Resolution）
 # ═══════════════════════════════════════════════════════════════
+
+NAMING_LOG = SYSTEM_DIR / "naming_log.jsonl"
+
+NAMING_CONFIRM_PROMPT = """\
+You are Mnemosyne, guardian of true names.
+Below are person names extracted from memories. They may refer to the same person under different spellings.
+
+For each candidate group, answer: are these names the SAME person?
+Only confirm if you are confident. When in doubt, say no.
+
+Candidates:
+{candidates}
+
+Return a JSON array of confirmed groups. Each group is an object with:
+- "canonical": the best/most complete name to keep
+- "aliases": list of other names that refer to the same person
+
+Example:
+[
+  {{"canonical": "friend-A", "aliases": ["friend A", "Friend_A"]}},
+  {{"canonical": "小明", "aliases": ["XiaoMing"]}}
+]
+
+If no groups should be merged, return [].
+Respond ONLY with the JSON array.
+"""
+
+
+def _normalize_person_name(name: str) -> str:
+    """正規化人名：lowercase / 去連字號 / 去底線 / strip。"""
+    return name.lower().replace("-", "").replace("_", "").replace(" ", "").strip()
+
+
+def _embed_names(names: list[str]) -> dict[str, list[float]]:
+    """用 sentence-transformers 為人名產生 embedding。"""
+    from sentence_transformers import SentenceTransformer
+
+    model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
+    embeddings = model.encode(names, normalize_embeddings=True)
+    return {name: emb.tolist() for name, emb in zip(names, embeddings)}
+
+
+def _cosine_sim(a: list[float], b: list[float]) -> float:
+    """計算兩個向量的 cosine similarity。"""
+    dot = sum(x * y for x, y in zip(a, b))
+    return dot  # 已 normalize，dot product = cosine similarity
+
+
+def naming_rite(
+    model: str = "gemma3:4b",
+    similarity_threshold: float = 0.85,
+    dry_run: bool = False,
+) -> int:
+    """
+    The Naming Rite — 真名歸一。
+
+    1. 收集所有 Person 節點
+    2. 正規化名稱，找出完全匹配的組
+    3. 對剩餘名稱做 embedding 相似度聚類
+    4. LLM 二次確認候選合併對
+    5. 合併節點：邊重導 + aliases 更新
+    6. 寫入 naming_log.jsonl
+
+    Returns:
+        合併的節點數量
+    """
+    from tapestry import get_all_persons, merge_persons, _person_edge_count, get_conn
+
+    conn = get_conn()
+    persons = get_all_persons(conn)
+
+    if len(persons) < 2:
+        print("  Too few names in the Tapestry for the Naming Rite.")
+        return 0
+
+    print(f"  Examining {len(persons)} person nodes...")
+
+    # ── Phase 1: 正規化完全匹配 ──────────────────────────────
+    norm_groups: dict[str, list[str]] = {}
+    for p in persons:
+        norm = _normalize_person_name(p["name"])
+        norm_groups.setdefault(norm, []).append(p["name"])
+
+    # 只保留有多個名稱的組
+    exact_candidates = {k: v for k, v in norm_groups.items() if len(v) > 1}
+
+    # 已被 exact match 處理的名稱
+    exact_matched = set()
+    for names in exact_candidates.values():
+        exact_matched.update(names)
+
+    # ── Phase 2: embedding 相似度聚類（剩餘名稱）─────────────
+    remaining = [p["name"] for p in persons if p["name"] not in exact_matched]
+    embed_candidates: list[tuple[str, str, float]] = []
+
+    if len(remaining) >= 2:
+        print(f"  Computing embeddings for {len(remaining)} remaining names...")
+        name_embeddings = _embed_names(remaining)
+
+        for i, name_a in enumerate(remaining):
+            for name_b in remaining[i + 1:]:
+                sim = _cosine_sim(name_embeddings[name_a], name_embeddings[name_b])
+                if sim >= similarity_threshold:
+                    embed_candidates.append((name_a, name_b, sim))
+
+    # ── 合併候選列表 ─────────────────────────────────────────
+    # exact match 組直接進入候選（不需 LLM 確認）
+    confirmed_groups: list[dict] = []
+
+    for norm_key, names in exact_candidates.items():
+        # 選邊數最多的作為 canonical
+        best = max(names, key=lambda n: _person_edge_count(conn, n))
+        aliases = [n for n in names if n != best]
+        confirmed_groups.append({"canonical": best, "aliases": aliases, "method": "exact"})
+
+    # embedding 候選需要 LLM 確認
+    if embed_candidates:
+        # 把 pair 聚合成組（union-find 簡化版）
+        parent: dict[str, str] = {}
+
+        def find(x: str) -> str:
+            while parent.get(x, x) != x:
+                x = parent[x]
+            return x
+
+        def union(a: str, b: str) -> None:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        for name_a, name_b, _ in embed_candidates:
+            union(name_a, name_b)
+
+        embed_groups: dict[str, list[str]] = {}
+        for name_a, name_b, _ in embed_candidates:
+            for n in (name_a, name_b):
+                root = find(n)
+                embed_groups.setdefault(root, set()).add(n)
+        embed_groups = {k: sorted(v) for k, v in embed_groups.items()}
+
+        # LLM 確認
+        if embed_groups:
+            cand_text = "\n".join(
+                f"  Group {i+1}: {', '.join(names)}"
+                for i, names in enumerate(embed_groups.values())
+            )
+            print(f"  Asking the Oracle to confirm {len(embed_groups)} embedding-based groups...")
+
+            try:
+                import ollama
+                prompt = NAMING_CONFIRM_PROMPT.format(candidates=cand_text)
+                resp = ollama.chat(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    stream=False,
+                    think=False,
+                    options={"temperature": 0},
+                )
+                raw = resp["message"]["content"].strip()
+                start = raw.find("[")
+                end = raw.rfind("]")
+                if start != -1 and end != -1:
+                    llm_groups = json.loads(raw[start:end + 1])
+                    for g in llm_groups:
+                        if isinstance(g, dict) and "canonical" in g and "aliases" in g:
+                            confirmed_groups.append({
+                                "canonical": g["canonical"],
+                                "aliases": g["aliases"],
+                                "method": "embedding+llm",
+                            })
+            except Exception as e:
+                print(f"  The Oracle's vision was unclear: {e}")
+
+    if not confirmed_groups:
+        print("  All names are distinct — no merging needed.")
+        return 0
+
+    # ── 顯示結果 ─────────────────────────────────────────────
+    total_aliases = sum(len(g["aliases"]) for g in confirmed_groups)
+    print(f"\n  Found {len(confirmed_groups)} groups to merge ({total_aliases} aliases):")
+    for g in confirmed_groups:
+        method_tag = f"[{g['method']}]"
+        print(f"    {method_tag} {g['canonical']} ← {', '.join(g['aliases'])}")
+
+    if dry_run:
+        print("\n  [DRY-RUN] No changes made.")
+        return 0
+
+    # ── 執行合併 ─────────────────────────────────────────────
+    merged_total = 0
+    log_entries = []
+
+    for g in confirmed_groups:
+        canonical = g["canonical"]
+        aliases = g["aliases"]
+        edges = merge_persons(conn, canonical, aliases)
+        merged_total += len(aliases)
+
+        log_entries.append({
+            "timestamp": datetime.now().isoformat(),
+            "action": "merge",
+            "canonical": canonical,
+            "merged": aliases,
+            "method": g["method"],
+            "edges_redirected": edges,
+        })
+
+    # ── 寫入 naming_log.jsonl ────────────────────────────────
+    with open(NAMING_LOG, "a", encoding="utf-8") as f:
+        for entry in log_entries:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    print(f"\n  The Naming Rite is complete: {merged_total} names unified.")
+    print(f"  Merge log: {NAMING_LOG.relative_to(BASE)}")
+    return merged_total
 
 def slumber_stats():
     """顯示鞏固統計。"""
@@ -448,18 +663,19 @@ def main():
     ap.add_argument("--reflect",  action="store_true", help="Reflection — 從近期記憶提煉洞察")
     ap.add_argument("--hebbian",  action="store_true", help="Hebbian Learning — 共現記憶強化")
     ap.add_argument("--forget",   action="store_true", help="Strategic Forgetting — 策略性遺忘")
+    ap.add_argument("--naming",   action="store_true", help="The Naming Rite — 實體正規化")
     ap.add_argument("--stats",    action="store_true", help="顯示鞏固統計")
     ap.add_argument("--dry-run",  action="store_true", help="預覽模式，不實際寫入")
     ap.add_argument("--days",     type=int, default=14, help="Reflection 回顧天數（預設 14）")
-    ap.add_argument("--model",    type=str, default="gemma3:4b", help="LLM 模型（Reflection 用）")
-    ap.add_argument("--all",      action="store_true", help="執行完整鞏固（三個儀式全做）")
+    ap.add_argument("--model",    type=str, default="gemma3:4b", help="LLM 模型（Reflection / Naming 用）")
+    ap.add_argument("--all",      action="store_true", help="執行完整鞏固（四個儀式全做）")
     args = ap.parse_args()
 
     if args.stats:
         slumber_stats()
         return
 
-    run_all = args.all or not (args.reflect or args.hebbian or args.forget)
+    run_all = args.all or not (args.reflect or args.hebbian or args.forget or args.naming)
 
     if run_all:
         print("🌙 The Rite of Slumber begins...\n")
@@ -477,6 +693,11 @@ def main():
     if args.forget or run_all:
         print("═══ III. The Lethe Protocol ═══")
         strategic_forgetting(dry_run=args.dry_run)
+        print()
+
+    if args.naming or run_all:
+        print("═══ IV. The Naming Rite ═══")
+        naming_rite(model=args.model, dry_run=args.dry_run)
         print()
 
     if run_all:
