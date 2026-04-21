@@ -38,6 +38,7 @@ BASE         = Path(__file__).parent.parent
 CHROMA_DIR   = Path(__file__).parent / "chroma_db"
 BM25_PATH    = Path(__file__).parent / "bm25_index.pkl"
 CTX_CACHE    = Path(__file__).parent / "contextual_cache.json"
+HYQE_CACHE   = Path(__file__).parent / "hyqe_cache.json"
 EMBED_MODEL  = "paraphrase-multilingual-MiniLM-L12-v2"
 COLLECTION   = "personal_brain"
 MIN_PARA_LEN = 25   # 少於此字數的段落略過（通常是標題殘留）
@@ -372,6 +373,132 @@ def generate_contextual_notes(
         return [""] * len(paras)
 
 
+# ─── HyQE（Hypothetical Question Embedding）─────────────────
+#
+# The Triple Echo：為每個段落生成 3–5 個假設問題，
+# 嵌入為額外視角（view: "hyqe"），搜尋時取同一 chunk 最高分視角。
+#
+# 快取：hyqe_cache.json
+# 格式：{ "path::para0": ["問題1", "問題2", ...], ... }
+
+_hyqe_cache: dict | None = None
+
+
+def _load_hyqe_cache() -> dict:
+    """載入 HyQE 快取。"""
+    global _hyqe_cache
+    if _hyqe_cache is not None:
+        return _hyqe_cache
+    if HYQE_CACHE.exists():
+        try:
+            _hyqe_cache = json.loads(HYQE_CACHE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            _hyqe_cache = {}
+    else:
+        _hyqe_cache = {}
+    return _hyqe_cache
+
+
+def _save_hyqe_cache(cache: dict) -> None:
+    """儲存 HyQE 快取。"""
+    global _hyqe_cache
+    _hyqe_cache = cache
+    HYQE_CACHE.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+HYQE_PROMPT = """\
+You are the Oracle of Mneme. A memory fragment has been brought before you.
+Your task: for each numbered paragraph, generate 3–5 hypothetical questions \
+that a user might ask which this paragraph could answer. \
+Write questions in the same language as the source text.
+
+Questions should be natural, diverse, and cover different angles:
+- Factual questions (who/what/when/where)
+- Reflective questions (how did you feel / what did you learn)
+- Relational questions (who was involved / what was the context)
+
+Document title: {title}
+Document summary: {summary}
+
+Paragraphs:
+{paragraphs}
+
+Respond ONLY with a JSON array of arrays. Each inner array contains 3–5 question strings.
+Example: [["某城市旅行時做了什麼？", "和誰一起去的？", "那次旅行的感受如何？"], ["..."]]
+"""
+
+
+def generate_hyqe_questions(
+    rel_path: str, title: str, summary: str, body: str,
+    paras: list[str], model: str = CTX_MODEL,
+) -> list[list[str]]:
+    """
+    The Triple Echo — 為一篇文件的所有段落批次生成假設問題。
+
+    一次 LLM 呼叫處理整份文件，結果存入 hyqe_cache.json。
+    """
+    import ollama
+
+    cache = _load_hyqe_cache()
+
+    # 檢查快取
+    cache_keys = [f"{rel_path}::para{i}" for i in range(len(paras))]
+    if all(k in cache for k in cache_keys):
+        return [cache[k] for k in cache_keys]
+
+    # 準備 prompt
+    para_list = "\n".join(f"[{i}] {p[:200]}" for i, p in enumerate(paras))
+    body_trimmed = body[:3000]
+    if len(body) > 3000:
+        body_trimmed += "\n...[截斷]"
+
+    prompt = HYQE_PROMPT.format(
+        title=title or "(untitled)",
+        summary=summary or "(no summary)",
+        paragraphs=para_list,
+    )
+
+    try:
+        resp = ollama.chat(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            stream=False,
+            think=False,
+            options={"temperature": 0},
+        )
+        raw = resp["message"]["content"].strip()
+
+        # 解析 JSON array of arrays
+        start = raw.find("[")
+        end = raw.rfind("]")
+        if start == -1 or end == -1:
+            raise ValueError(f"LLM 沒有回傳 JSON array：{raw[:200]}")
+        questions_all = json.loads(raw[start:end + 1])
+
+        # 確保長度匹配
+        if len(questions_all) < len(paras):
+            questions_all.extend([[] for _ in range(len(paras) - len(questions_all))])
+        questions_all = questions_all[:len(paras)]
+
+        # 確保每個元素都是 list[str]
+        for i, qs in enumerate(questions_all):
+            if not isinstance(qs, list):
+                questions_all[i] = []
+            else:
+                questions_all[i] = [str(q) for q in qs if q][:5]
+
+        # 存入快取
+        for i, qs in enumerate(questions_all):
+            cache[f"{rel_path}::para{i}"] = qs
+        _save_hyqe_cache(cache)
+
+        return questions_all
+
+    except Exception as e:
+        print(f"  [HyQE] The Oracle faltered for {rel_path}: {e}")
+        return [[] for _ in paras]
+
+
 def build_chunks(rel_path: str, fm: dict, body: str) -> list[dict]:
     """
     為一個文件建立所有 chunks。
@@ -417,34 +544,51 @@ def build_chunks(rel_path: str, fm: dict, body: str) -> list[dict]:
         chunks.append({
             "id":   f"{rel_path}::summary",
             "text": doc_summary,
-            "meta": {**meta_base, "chunk_type": "summary", "chunk_index": 0},
+            "meta": {**meta_base, "chunk_type": "summary", "chunk_index": 0,
+                     "view": "summary"},
         })
 
     # ② 段落 chunks（paragraph-level）— Small-to-Big
     # 使用 section-aware 切片，每個 chunk 記錄 parent section 資訊
     # 若有 contextual notes 快取，注入到每個段落前方（Contextual Retrieval）
     section_paras = section_aware_paragraphs(body)
-    cache = _load_ctx_cache()
+    ctx_cache = _load_ctx_cache()
+    hyqe_cache = _load_hyqe_cache()
     for i, sp in enumerate(section_paras):
         para = sp["text"]
         ctx_key = f"{rel_path}::para{i}"
-        ctx_note = cache.get(ctx_key, "")
+        ctx_note = ctx_cache.get(ctx_key, "")
         if ctx_note:
             injected = f"[語境：{ctx_note}]\n{prefix}\n{para}"
         else:
             injected = f"{prefix}\n{para}"
+
+        para_meta = {
+            **meta_base,
+            "chunk_type":        "paragraph",
+            "chunk_index":       i + 1,
+            "parent_doc_id":     rel_path,
+            "parent_section_id": sp["section_id"],
+            "sibling_order":     sp["sibling_order"],
+            "view":              "raw",
+        }
         chunks.append({
             "id":   f"{rel_path}::para{i}",
             "text": injected,
-            "meta": {
-                **meta_base,
-                "chunk_type":        "paragraph",
-                "chunk_index":       i + 1,
-                "parent_doc_id":     rel_path,
-                "parent_section_id": sp["section_id"],
-                "sibling_order":     sp["sibling_order"],
-            },
+            "meta": para_meta,
         })
+
+        # ③ HyQE 視角 chunks（The Triple Echo）
+        # 將假設問題串接為一個額外 chunk，view="hyqe"
+        hyqe_key = f"{rel_path}::para{i}"
+        hyqe_qs = hyqe_cache.get(hyqe_key, [])
+        if hyqe_qs:
+            hyqe_text = f"{prefix}\n" + "\n".join(hyqe_qs)
+            chunks.append({
+                "id":   f"{rel_path}::para{i}::hyqe",
+                "text": hyqe_text,
+                "meta": {**para_meta, "view": "hyqe"},
+            })
 
     return chunks
 
@@ -552,8 +696,10 @@ def build_bm25_index(all_chunks: list[dict]) -> None:
     """
     from rank_bm25 import BM25Okapi
 
-    # 只索引 paragraph chunks（summary chunk 會重複，不加入）
-    para_chunks = [c for c in all_chunks if c["meta"].get("chunk_type") == "paragraph"]
+    # 只索引 raw paragraph chunks（summary 和 hyqe 不加入 BM25）
+    para_chunks = [c for c in all_chunks
+                   if c["meta"].get("chunk_type") == "paragraph"
+                   and c["meta"].get("view", "raw") == "raw"]
 
     corpus_ids   = [c["id"]   for c in para_chunks]
     corpus_metas = [c["meta"] for c in para_chunks]
@@ -663,7 +809,10 @@ def _rrf_merge(
 # ─── 搜尋 ────────────────────────────────────────────────────
 
 def search_dense(query: str, top_k: int = 15, doc_type: str = "") -> list[dict]:
-    """Pure dense vector search（ChromaDB cosine similarity）。"""
+    """
+    Pure dense vector search（ChromaDB cosine similarity）。
+    The Triple Echo：同一 path 可能有多個 view（raw / hyqe），取最高分視角。
+    """
     _, col = get_collection()
     if col.count() == 0:
         return []
@@ -673,26 +822,30 @@ def search_dense(query: str, top_k: int = 15, doc_type: str = "") -> list[dict]:
     else:
         where = {"chunk_type": {"$eq": "paragraph"}}
 
+    # 多取一些結果以涵蓋不同 view 的 chunks
+    n = min(top_k * 3, col.count())
     results = col.query(
         query_texts  = [query],
-        n_results    = min(top_k, col.count()),
+        n_results    = n,
         where        = where,
         include      = ["documents", "metadatas", "distances"],
     )
 
-    output     = []
-    seen_paths = set()
+    # 按 path 取最高分視角（The Triple Echo dedup）
+    best_by_path: dict[str, dict] = {}
     for doc, meta, dist in zip(
         results["documents"][0],
         results["metadatas"][0],
         results["distances"][0],
     ):
         path = meta.get("path", "")
-        if path in seen_paths:
+        score = round(1 - dist, 4)
+        if path in best_by_path:
+            if score > best_by_path[path]["score"]:
+                best_by_path[path]["score"] = score
             continue
-        seen_paths.add(path)
-        output.append({
-            "score":     round(1 - dist, 4),
+        best_by_path[path] = {
+            "score":     score,
             "title":     meta.get("title", ""),
             "path":      path,
             "date":      meta.get("date", ""),
@@ -701,8 +854,10 @@ def search_dense(query: str, top_k: int = 15, doc_type: str = "") -> list[dict]:
             "period":    meta.get("period", ""),
             "locations": meta.get("locations", ""),
             "snippet":   doc[doc.find("\n") + 1:][:200] if "\n" in doc else doc[:200],
-        })
-    return output
+        }
+
+    output = sorted(best_by_path.values(), key=lambda x: -x["score"])
+    return output[:top_k]
 
 
 def search_graph(query: str, top_k: int = 15, doc_type: str = "") -> list[dict]:
@@ -990,6 +1145,60 @@ def contextualize_all(model: str = CTX_MODEL, rebuild: bool = False):
     print(f"   Cache: {CTX_CACHE.name}")
 
 
+def hyqe_all(model: str = CTX_MODEL, rebuild: bool = False):
+    """
+    The Triple Echo — 為所有記憶的段落生成假設問題。
+
+    掃描 Vault 中所有 .md 檔案，為每個段落生成 3–5 個假設問題，
+    存入 hyqe_cache.json。後續 build_index 時會自動讀取並建立 HyQE view chunks。
+    """
+    cache = _load_hyqe_cache() if not rebuild else {}
+    total_files = 0
+    total_qs = 0
+    skipped = 0
+
+    print(f"🔱 The Triple Echo begins... (model: {model})")
+    if rebuild:
+        print("   Rebuilding all hypothetical questions from scratch.\n")
+
+    for md_file in sorted(BASE.rglob("*.md")):
+        if "00_System" in str(md_file):
+            continue
+        if md_file.name in EXCLUDE_FILES:
+            continue
+        try:
+            content = md_file.read_text(encoding="utf-8")
+        except Exception:
+            continue
+
+        rel = str(md_file.relative_to(BASE))
+        fm, body = parse_frontmatter(content)
+        paras = semantic_paragraphs(body)
+        if not paras:
+            continue
+
+        # 檢查快取
+        cache_keys = [f"{rel}::para{i}" for i in range(len(paras))]
+        if not rebuild and all(k in cache for k in cache_keys):
+            skipped += 1
+            continue
+
+        total_files += 1
+        title = str(fm.get("title", Path(rel).stem) or "")
+        summary = str(fm.get("summary", "") or "")
+        print(f"  [{total_files}] {rel} ({len(paras)} paras) ... ", end="", flush=True)
+
+        questions = generate_hyqe_questions(rel, title, summary, body, paras, model=model)
+        valid_qs = sum(len(qs) for qs in questions if qs)
+        total_qs += valid_qs
+        print(f"OK ({valid_qs} questions)")
+
+    print(f"\n🔱 The Triple Echo is complete.")
+    print(f"   {total_files} files echoed, {total_qs} hypothetical questions woven.")
+    print(f"   {skipped} files already echoed (skipped).")
+    print(f"   Cache: {HYQE_CACHE.name}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Personal Brain DB 向量化工具")
     parser.add_argument("--rebuild",       action="store_true", help="重建整個索引")
@@ -998,8 +1207,10 @@ def main():
     parser.add_argument("--type",          type=str, default="",  help="篩選類型：note/chat/bio")
     parser.add_argument("--contextualize", action="store_true",
                         help="The Illumination — 生成語境化段落摘要（Contextual Retrieval）")
+    parser.add_argument("--hyqe",          action="store_true",
+                        help="The Triple Echo — 生成假設問題（HyQE multi-view）")
     parser.add_argument("--ctx-model",     type=str, default=CTX_MODEL,
-                        help=f"Contextual note 使用的 Ollama 模型（預設 {CTX_MODEL}）")
+                        help=f"Contextual note / HyQE 使用的 Ollama 模型（預設 {CTX_MODEL}）")
     args = parser.parse_args()
 
     if args.query:
@@ -1019,6 +1230,10 @@ def main():
 
     if args.contextualize:
         contextualize_all(model=args.ctx_model, rebuild=args.rebuild)
+        return
+
+    if args.hyqe:
+        hyqe_all(model=args.ctx_model, rebuild=args.rebuild)
         return
 
     build_index(rebuild=args.rebuild)

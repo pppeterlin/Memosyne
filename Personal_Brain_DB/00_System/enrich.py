@@ -121,6 +121,7 @@ importance: {imp}
 period: "{period}"
 themes: {themes}
 personal_facts: {facts}
+hyqe_questions: []
 entities:
   locations: {locs}
   people: {people}
