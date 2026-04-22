@@ -114,6 +114,11 @@ def rewrite_file_with_enrichment(path: Path, enrichment: dict, dry_run: bool) ->
     facts   = json.dumps(enrichment.get("personal_facts", []), ensure_ascii=False)
     now     = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
+    needs_review = enrichment.get("needs_review", [])
+    review_line = ""
+    if needs_review:
+        review_line = f"\nneeds_review: {json.dumps(needs_review, ensure_ascii=False)}"
+
     enrich_block = f"""
 # ── Enrichment（LLM 語意增強，僅含原文出現的實體）──
 enriched_at: "{now}"
@@ -121,7 +126,7 @@ importance: {imp}
 period: "{period}"
 themes: {themes}
 personal_facts: {facts}
-hyqe_questions: []
+hyqe_questions: []{review_line}
 entities:
   locations: {locs}
   people: {people}
@@ -333,6 +338,119 @@ def validate_entities(enrichment: dict, original_text: str) -> dict:
     return result
 
 
+# ─── The Mirror of Truth — Self-RAG 批判 ────────────────────
+
+CRITIQUE_PROMPT = """\
+You are the Mirror of Truth, inspector for the Oracle of Mneme.
+Given the SOURCE TEXT and a set of CLAIMED FIELDS extracted from it,
+rule on each claim: is it directly supported by the text, or a hallucination?
+
+RULES:
+1. "supported"  = the claim can be verified by text literally present in the source
+                  (exact wording not required, but meaning must be clearly there)
+2. "partial"    = loosely implied but not explicit; should be kept but flagged
+3. "unsupported"= cannot be found in the text; this is a hallucination — remove
+
+Speak ONLY in pure JSON:
+
+{{
+  "personal_facts": [
+    {{"text": "<original fact>", "verdict": "supported|partial|unsupported", "reason": "<short>"}}
+  ],
+  "themes": [
+    {{"text": "<theme>", "verdict": "...", "reason": "..."}}
+  ],
+  "period": {{"text": "<period>", "verdict": "...", "reason": "..."}}
+}}
+
+SOURCE TEXT:
+{text}
+
+CLAIMED FIELDS:
+{claims}
+"""
+
+
+def critique_enrichment(enrichment: dict, original_text: str, model: str) -> dict:
+    """
+    Self-RAG critique：對 personal_facts / themes / period 做語意批判。
+    - unsupported → 移除
+    - partial     → 保留但加入 needs_review
+    - supported   → 保留
+    """
+    from llm_client import chat_text
+
+    facts  = list(enrichment.get("personal_facts", []))
+    themes = list(enrichment.get("themes", []))
+    period = enrichment.get("period", "")
+
+    if not facts and not themes and not period:
+        return enrichment
+
+    claims = {
+        "personal_facts": facts,
+        "themes":         themes,
+        "period":         period,
+    }
+
+    prompt = CRITIQUE_PROMPT.format(
+        text=original_text[:3000],
+        claims=json.dumps(claims, ensure_ascii=False, indent=2),
+    )
+
+    try:
+        raw = chat_text(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            think=False,
+        ).strip()
+        start = raw.find("{")
+        end   = raw.rfind("}")
+        if start == -1 or end == -1:
+            raise ValueError("no JSON")
+        verdict = json.loads(raw[start:end + 1])
+    except Exception as e:
+        print(f"  [Critique] Mirror faltered: {e}")
+        return enrichment
+
+    needs_review: list[str] = []
+
+    def _apply(key: str, items: list[str]) -> list[str]:
+        kept = []
+        entries = verdict.get(key, [])
+        if not isinstance(entries, list):
+            return items
+        verdict_map = {}
+        for e in entries:
+            if isinstance(e, dict) and "text" in e:
+                verdict_map[str(e["text"])] = str(e.get("verdict", "")).lower()
+        for item in items:
+            v = verdict_map.get(item, "supported")
+            if v == "unsupported":
+                continue
+            kept.append(item)
+            if v == "partial":
+                needs_review.append(f"{key}:{item}")
+        return kept
+
+    enrichment["personal_facts"] = _apply("personal_facts", facts)
+    enrichment["themes"]         = _apply("themes", themes)
+
+    period_entry = verdict.get("period")
+    if isinstance(period_entry, dict):
+        v = str(period_entry.get("verdict", "")).lower()
+        if v == "unsupported":
+            enrichment["period"] = ""
+        elif v == "partial":
+            needs_review.append(f"period:{period}")
+
+    if needs_review:
+        enrichment["needs_review"] = needs_review
+
+    return enrichment
+
+
 # ─── 主流程 ─────────────────────────────────────────────────
 
 def collect_files(target_file: str | None = None) -> list[Path]:
@@ -360,7 +478,8 @@ def already_enriched(content: str) -> bool:
 
 
 def enrich_all(model: str, rebuild: bool, dry_run: bool, target_file: str | None,
-               weave_tapestry: bool = True):
+               weave_tapestry: bool = True, critique: bool = False,
+               critique_min_importance: str = "high"):
     files   = collect_files(target_file)
     total   = len(files)
     skipped = 0
@@ -409,6 +528,14 @@ def enrich_all(model: str, rebuild: bool, dry_run: bool, target_file: str | None
             raw_enrichment  = call_llm(title, full_text, model, filename_hint=fname_hint)
             enrichment      = validate_entities(raw_enrichment, full_text)
             enrichment      = resolve_person_aliases(enrichment)
+
+            # The Mirror of Truth — Self-RAG critique
+            importance_rank = {"low": 0, "medium": 1, "high": 2}
+            min_rank = importance_rank.get(critique_min_importance, 2)
+            this_rank = importance_rank.get(enrichment.get("importance", "medium"), 1)
+            if critique and this_rank >= min_rank:
+                enrichment = critique_enrichment(enrichment, full_text, model)
+
             rewrite_file_with_enrichment(path, enrichment, dry_run)
 
             locs   = enrichment["entities"]["locations"]
@@ -445,6 +572,11 @@ def main():
     ap.add_argument("--no-tapestry",    action="store_true",  help="跳過 Tapestry 更新")
     ap.add_argument("--weave-tapestry", action="store_true",
                     help="只重建 Tapestry（不重新增強，從現有 enriched_at 記憶讀取）")
+    ap.add_argument("--critique",       action="store_true",
+                    help="The Mirror of Truth — Self-RAG 批判（personal_facts/themes/period）")
+    ap.add_argument("--critique-min-importance", default="high",
+                    choices=["low", "medium", "high"],
+                    help="只對 importance ≥ 此值 的記憶進行批判（預設 high）")
     args = ap.parse_args()
 
     if args.weave_tapestry:
@@ -454,11 +586,13 @@ def main():
         return
 
     enrich_all(
-        model          = args.model,
-        rebuild        = args.rebuild,
-        dry_run        = args.dry_run,
-        target_file    = args.file,
-        weave_tapestry = not args.no_tapestry,
+        model                    = args.model,
+        rebuild                  = args.rebuild,
+        dry_run                  = args.dry_run,
+        target_file              = args.file,
+        weave_tapestry           = not args.no_tapestry,
+        critique                 = args.critique,
+        critique_min_importance  = args.critique_min_importance,
     )
 
 
