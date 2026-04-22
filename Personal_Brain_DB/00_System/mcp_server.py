@@ -42,7 +42,14 @@ def _get_collection():
 
 
 @mcp.tool()
-def search_memory(query: str, top_k: int = 5, return_parent: bool = False) -> str:
+def search_memory(
+    query: str,
+    top_k: int = 5,
+    return_parent: bool = False,
+    muses: list[str] | None = None,
+    auto_route: bool = False,
+    muse_mode: str = "soft",
+) -> str:
     """
     語義搜尋個人記憶資料庫（三路混合 + ACT-R 認知重排）。
     可搜尋 Gemini 對話紀錄、個人手札、Profile 等所有內容。
@@ -53,10 +60,16 @@ def search_memory(query: str, top_k: int = 5, return_parent: bool = False) -> st
         query: 搜尋關鍵字或自然語言問題（支援中文）
         top_k: 回傳前幾筆結果（預設 5）
         return_parent: 若為 True，回傳命中 chunk 所屬的完整 parent section（Small-to-Big）
+        muses: The Invocation — 指定繆思列表（例：["Clio","Calliope"]）
+        auto_route: 自動路由 query 到最相關的 1–2 位繆思（忽略 muses 除非已指定）
+        muse_mode: "soft"（命中加權 ×1.3）或 "hard"（只保留命中繆思的記憶）
     """
     try:
         from vectorize import search as hybrid_search
-        results = hybrid_search(query, top_k=top_k, return_parent=return_parent)
+        results = hybrid_search(
+            query, top_k=top_k, return_parent=return_parent,
+            muses=muses, auto_route=auto_route, muse_mode=muse_mode,
+        )
 
         if not results:
             return f"搜尋「{query}」— The waters are still. No echoes found."

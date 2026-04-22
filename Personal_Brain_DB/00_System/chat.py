@@ -214,19 +214,18 @@ PLANNER_PROMPT = """\
 
 
 def plan_query_local(question: str, model: str) -> list[str]:
-    """用本地 Ollama 做 query planning，回傳搜尋關鍵詞列表。"""
+    """用 LLM 做 query planning，回傳搜尋關鍵詞列表（Ollama / OpenRouter）。"""
     import json
-    import ollama
+    from llm_client import chat_text
 
     prompt = PLANNER_PROMPT.format(question=question)
     try:
-        resp = ollama.chat(
+        raw = chat_text(
             model=model,
             messages=[{"role": "user", "content": prompt}],
-            stream=False,
+            temperature=0,
             think=False,
-        )
-        raw = resp["message"]["content"].strip()
+        ).strip()
         # 擷取 JSON（有時 LLM 會在前後加說明文字）
         start = raw.find("{")
         end   = raw.rfind("}") + 1
@@ -387,7 +386,7 @@ def chat_once_local(
     use_plan: bool = True,
     gemini_client=None,
 ) -> tuple[str, list[dict], list[dict], list[str]]:
-    import ollama
+    from llm_client import chat_stream, chat_text
 
     # ── Query Planning ────────────────────────────────────────
     planned_queries: list[str] = []
@@ -410,22 +409,19 @@ def chat_once_local(
         try:
             if stream:
                 with CatSpinner():
-                    gen         = ollama.chat(model=model, messages=messages, stream=True, think=False)
+                    gen         = chat_stream(model, messages, temperature=0, think=False)
                     first_chunk = next(gen, None)
                 print(f"\n{label} > ", end="", flush=True)
                 if first_chunk:
-                    t = first_chunk["message"]["content"]
-                    print(t, end="", flush=True)
-                    full_reply += t
-                for chunk in gen:
-                    t = chunk["message"]["content"]
-                    print(t, end="", flush=True)
-                    full_reply += t
+                    print(first_chunk, end="", flush=True)
+                    full_reply += first_chunk
+                for piece in gen:
+                    print(piece, end="", flush=True)
+                    full_reply += piece
                 print("\n")
             else:
                 with CatSpinner():
-                    resp = ollama.chat(model=model, messages=messages, stream=False, think=False)
-                full_reply = resp["message"]["content"]
+                    full_reply = chat_text(model, messages, temperature=0, think=False)
                 print(f"\n{label} > {full_reply}\n")
             break
 

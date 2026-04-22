@@ -184,8 +184,8 @@ Memory fragment:
 
 
 def call_llm(title: str, content: str, model: str, filename_hint: list = None) -> dict:
-    """呼叫本地 Ollama LLM，回傳 enrichment dict。"""
-    import ollama
+    """呼叫 LLM（Ollama / OpenRouter），回傳 enrichment dict。"""
+    from llm_client import chat_text
 
     # 截斷過長內容（避免超出 context window）
     content_trimmed = content[:3000]
@@ -201,14 +201,12 @@ def call_llm(title: str, content: str, model: str, filename_hint: list = None) -
         content=content_trimmed,
     )
 
-    resp = ollama.chat(
+    raw = chat_text(
         model=model,
         messages=[{"role": "user", "content": prompt}],
-        stream=False,
+        temperature=0,
         think=False,
-        options={"temperature": 0},
-    )
-    raw = resp["message"]["content"].strip()
+    ).strip()
 
     # 找第一個 { 到最後一個 } 之間的內容（比 .* 更可靠）
     start = raw.find("{")

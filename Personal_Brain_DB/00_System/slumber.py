@@ -121,7 +121,7 @@ def reflect(days: int = 14, model: str = "gemma3:4b", dry_run: bool = False) -> 
     Returns:
         生成的 reflection 檔案路徑，或 None（如果沒有足夠記憶）。
     """
-    import ollama
+    from llm_client import chat_text
 
     memories = _collect_recent_memories(days)
     if len(memories) < 3:
@@ -143,14 +143,12 @@ def reflect(days: int = 14, model: str = "gemma3:4b", dry_run: bool = False) -> 
 
     print(f"  Mnemosyne dreams upon {len(memories)} recent memories...")
 
-    resp = ollama.chat(
+    raw = chat_text(
         model=model,
         messages=[{"role": "user", "content": prompt}],
-        stream=False,
+        temperature=0.3,
         think=False,
-        options={"temperature": 0.3},
-    )
-    raw = resp["message"]["content"].strip()
+    ).strip()
 
     # 解析 JSON
     start = raw.find("{")
@@ -560,16 +558,14 @@ def naming_rite(
             print(f"  Asking the Oracle to confirm {len(embed_groups)} embedding-based groups...")
 
             try:
-                import ollama
+                from llm_client import chat_text
                 prompt = NAMING_CONFIRM_PROMPT.format(candidates=cand_text)
-                resp = ollama.chat(
+                raw = chat_text(
                     model=model,
                     messages=[{"role": "user", "content": prompt}],
-                    stream=False,
+                    temperature=0,
                     think=False,
-                    options={"temperature": 0},
-                )
-                raw = resp["message"]["content"].strip()
+                ).strip()
                 start = raw.find("[")
                 end = raw.rfind("]")
                 if start != -1 and end != -1:
