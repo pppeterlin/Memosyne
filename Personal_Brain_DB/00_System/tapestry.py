@@ -32,9 +32,26 @@ Memosyne — The Tapestry (tapestry.py)
 
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import kuzu
+
+# ─── Bi-temporal edge properties ─────────────────────────────
+# t_valid_start   : 關係在真實世界開始成立的時間（通常 = t_ingested）
+# t_valid_end     : 關係失效時間（None/NULL 表示目前仍有效）
+# t_ingested      : 寫入系統的時間
+# invalidated_by  : 被哪條記憶 path 所觸發的失效
+_REL_TABLES = [
+    "mem_person", "mem_location", "mem_event", "mem_period",
+    "event_loc",  "person_loc",   "person_event",
+]
+_TEMPORAL_COLUMNS = [
+    ("t_valid_start",  "TIMESTAMP"),
+    ("t_valid_end",    "TIMESTAMP"),
+    ("t_ingested",     "TIMESTAMP"),
+    ("invalidated_by", "STRING"),
+]
 
 BASE          = Path(__file__).parent.parent
 TAPESTRY_DB   = Path(__file__).parent / "tapestry_db"
@@ -74,6 +91,14 @@ def _init_schema(conn: kuzu.Connection) -> None:
         conn.execute("ALTER TABLE Person ADD aliases STRING[] DEFAULT []")
     except Exception:
         pass  # column already exists
+
+    # Migration: The Two Rivers — bi-temporal properties on every REL table
+    for rel in _REL_TABLES:
+        for col, ctype in _TEMPORAL_COLUMNS:
+            try:
+                conn.execute(f"ALTER TABLE {rel} ADD {col} {ctype}")
+            except Exception:
+                pass  # column already exists
 
 
 def get_conn() -> kuzu.Connection:
@@ -276,12 +301,16 @@ def weave_memory(
     conn: kuzu.Connection,
     memory_path: str,
     enrichment: dict,
+    now: datetime | None = None,
 ) -> None:
     """
     The Weaving — 將一份記憶的 enrichment 結果織入 Tapestry。
 
     呼叫時機：enrich.py 每次成功增強後立即呼叫。
     conn 傳入已開啟的 Connection（由呼叫方管理生命週期）。
+
+    Bi-temporal：新建的邊會設定 t_valid_start = t_ingested = now。
+                 既有邊的時間戳用 ON CREATE SET 保護，不被覆蓋。
     """
     entities       = enrichment.get("entities", {})
     period         = enrichment.get("period", "") or ""
@@ -289,6 +318,8 @@ def weave_memory(
     people         = [p for p in entities.get("people",    []) if p]
     events         = [e for e in entities.get("events",    []) if e]
     personal_facts = enrichment.get("personal_facts", []) or []
+
+    ts = now or datetime.now()
 
     # ── Memory node ───────────────────────────────────────────
     _merge_memory(conn, memory_path)
@@ -298,44 +329,50 @@ def weave_memory(
         _merge_node(conn, "Period", period)
         conn.execute("""
             MATCH (m:Memory {path: $mp}), (p:Period {name: $pn})
-            MERGE (m)-[:mem_period]->(p)
-        """, {"mp": memory_path, "pn": period})
+            MERGE (m)-[r:mem_period]->(p)
+            ON CREATE SET r.t_valid_start = $ts, r.t_ingested = $ts
+        """, {"mp": memory_path, "pn": period, "ts": ts})
 
     # ── Locations ─────────────────────────────────────────────
     for loc in locations:
         _merge_node(conn, "Location", loc)
         conn.execute("""
             MATCH (m:Memory {path: $mp}), (l:Location {name: $ln})
-            MERGE (m)-[:mem_location]->(l)
-        """, {"mp": memory_path, "ln": loc})
+            MERGE (m)-[r:mem_location]->(l)
+            ON CREATE SET r.t_valid_start = $ts, r.t_ingested = $ts
+        """, {"mp": memory_path, "ln": loc, "ts": ts})
 
     # ── People ────────────────────────────────────────────────
     for person in people:
         _merge_node(conn, "Person", person)
         conn.execute("""
             MATCH (m:Memory {path: $mp}), (p:Person {name: $pn})
-            MERGE (m)-[:mem_person]->(p)
-        """, {"mp": memory_path, "pn": person})
+            MERGE (m)-[r:mem_person]->(p)
+            ON CREATE SET r.t_valid_start = $ts, r.t_ingested = $ts
+        """, {"mp": memory_path, "pn": person, "ts": ts})
 
     # ── Events ────────────────────────────────────────────────
     for event in events:
         _merge_node(conn, "Event", event)
         conn.execute("""
             MATCH (m:Memory {path: $mp}), (e:Event {name: $en})
-            MERGE (m)-[:mem_event]->(e)
-        """, {"mp": memory_path, "en": event})
+            MERGE (m)-[r:mem_event]->(e)
+            ON CREATE SET r.t_valid_start = $ts, r.t_ingested = $ts
+        """, {"mp": memory_path, "en": event, "ts": ts})
         # Event → Location
         for loc in locations:
             conn.execute("""
                 MATCH (e:Event {name: $en}), (l:Location {name: $ln})
-                MERGE (e)-[:event_loc]->(l)
-            """, {"en": event, "ln": loc})
+                MERGE (e)-[r:event_loc]->(l)
+                ON CREATE SET r.t_valid_start = $ts, r.t_ingested = $ts
+            """, {"en": event, "ln": loc, "ts": ts})
         # Person → Event
         for person in people:
             conn.execute("""
                 MATCH (p:Person {name: $pn}), (e:Event {name: $en})
-                MERGE (p)-[:person_event]->(e)
-            """, {"pn": person, "en": event})
+                MERGE (p)-[r:person_event]->(e)
+                ON CREATE SET r.t_valid_start = $ts, r.t_ingested = $ts
+            """, {"pn": person, "en": event, "ts": ts})
 
     # ── personal_facts → Person located_in Location ───────────
     for fact in personal_facts:
@@ -346,8 +383,9 @@ def weave_memory(
                 if person in fact and loc in fact:
                     conn.execute("""
                         MATCH (p:Person {name: $pn}), (l:Location {name: $ln})
-                        MERGE (p)-[:person_loc {evidence: $ev}]->(l)
-                    """, {"pn": person, "ln": loc, "ev": fact[:80]})
+                        MERGE (p)-[r:person_loc {evidence: $ev}]->(l)
+                        ON CREATE SET r.t_valid_start = $ts, r.t_ingested = $ts
+                    """, {"pn": person, "ln": loc, "ev": fact[:80], "ts": ts})
 
 
 # ─── 圖搜尋 ──────────────────────────────────────────────────
@@ -676,6 +714,177 @@ def tapestry_stats(conn: kuzu.Connection | None = None) -> dict:
     }
 
 
+# ─── The Two Rivers — bi-temporal helpers ───────────────────
+
+def backfill_temporal(conn: kuzu.Connection | None = None,
+                      verbose: bool = True) -> dict[str, int]:
+    """
+    既有邊回填 t_valid_start = t_ingested = now（t_valid_end 保持 NULL）。
+    已有 t_ingested 的邊不動。
+    """
+    _own = conn is None
+    if _own:
+        conn = get_conn()
+    now = datetime.now()
+    touched: dict[str, int] = {}
+    for rel in _REL_TABLES:
+        try:
+            r = conn.execute(
+                f"MATCH ()-[e:{rel}]->() WHERE e.t_ingested IS NULL "
+                f"SET e.t_valid_start = $ts, e.t_ingested = $ts "
+                f"RETURN COUNT(e) AS c",
+                {"ts": now},
+            )
+            touched[rel] = int(r.get_as_df()["c"].iloc[0])
+        except Exception as e:
+            touched[rel] = 0
+            if verbose:
+                print(f"  [backfill] {rel} failed: {e}")
+    if verbose:
+        total = sum(touched.values())
+        print(f"[TAPESTRY] Backfilled {total} edges with timestamps.")
+        for k, v in touched.items():
+            if v:
+                print(f"    {k}: {v}")
+    return touched
+
+
+def invalidate_edge(conn: kuzu.Connection, rel: str,
+                    from_label: str, from_name: str,
+                    to_label: str,   to_name: str,
+                    invalidated_by: str,
+                    when: datetime | None = None) -> int:
+    """
+    標記一條邊失效（不刪除）。用於 3.2 Ordeal。
+    回傳影響邊數。
+    """
+    if rel not in _REL_TABLES:
+        raise ValueError(f"unknown rel table: {rel}")
+    ts = when or datetime.now()
+    from_key = "path" if from_label == "Memory" else "name"
+    to_key   = "path" if to_label   == "Memory" else "name"
+    r = conn.execute(
+        f"MATCH (a:{from_label} {{{from_key}: $a}})-[e:{rel}]->(b:{to_label} {{{to_key}: $b}}) "
+        f"WHERE e.t_valid_end IS NULL "
+        f"SET e.t_valid_end = $ts, e.invalidated_by = $by "
+        f"RETURN COUNT(e) AS c",
+        {"a": from_name, "b": to_name, "ts": ts, "by": invalidated_by},
+    )
+    return int(r.get_as_df()["c"].iloc[0])
+
+
+def currently_valid_edges(conn: kuzu.Connection | None = None,
+                          rel: str = "mem_person") -> list[dict]:
+    """
+    回傳目前有效（t_valid_end IS NULL）的邊。
+    """
+    _own = conn is None
+    if _own:
+        conn = get_conn()
+    if rel not in _REL_TABLES:
+        return []
+    from_label, to_label = _rel_endpoints(rel)
+    from_key = "path" if from_label == "Memory" else "name"
+    to_key   = "path" if to_label   == "Memory" else "name"
+    r = conn.execute(
+        f"MATCH (a:{from_label})-[e:{rel}]->(b:{to_label}) "
+        f"WHERE e.t_valid_end IS NULL "
+        f"RETURN a.{from_key} AS a, b.{to_key} AS b, "
+        f"       e.t_valid_start AS tvs, e.t_ingested AS tin"
+    )
+    df = r.get_as_df()
+    return df.to_dict(orient="records")
+
+
+def edges_as_of(conn: kuzu.Connection, rel: str, ts: datetime) -> list[dict]:
+    """
+    回傳在 ts 時間點仍然有效的邊：t_valid_start <= ts AND (t_valid_end IS NULL OR t_valid_end > ts)。
+    """
+    if rel not in _REL_TABLES:
+        return []
+    from_label, to_label = _rel_endpoints(rel)
+    from_key = "path" if from_label == "Memory" else "name"
+    to_key   = "path" if to_label   == "Memory" else "name"
+    r = conn.execute(
+        f"MATCH (a:{from_label})-[e:{rel}]->(b:{to_label}) "
+        f"WHERE e.t_valid_start <= $ts "
+        f"  AND (e.t_valid_end IS NULL OR e.t_valid_end > $ts) "
+        f"RETURN a.{from_key} AS a, b.{to_key} AS b, "
+        f"       e.t_valid_start AS tvs, e.t_valid_end AS tve",
+        {"ts": ts},
+    )
+    return r.get_as_df().to_dict(orient="records")
+
+
+def get_entity_timeline(entity_name: str,
+                        conn: kuzu.Connection | None = None) -> list[dict]:
+    """
+    回傳某實體（Person/Location/Event）涉及的所有邊的時間線。
+    結果依 t_valid_start 升序。
+    """
+    _own = conn is None
+    if _own:
+        conn = get_conn()
+
+    # 試著識別節點類型
+    label = None
+    for candidate in ("Person", "Location", "Event", "Period"):
+        r = conn.execute(
+            f"MATCH (n:{candidate} {{name: $n}}) RETURN COUNT(n) AS c",
+            {"n": entity_name},
+        )
+        if int(r.get_as_df()["c"].iloc[0]) > 0:
+            label = candidate
+            break
+    if not label:
+        return []
+
+    results: list[dict] = []
+    for rel in _REL_TABLES:
+        from_label, to_label = _rel_endpoints(rel)
+        if label not in (from_label, to_label):
+            continue
+        from_key = "path" if from_label == "Memory" else "name"
+        to_key   = "path" if to_label   == "Memory" else "name"
+        # 根據方向決定以哪一端作為篩選
+        if from_label == label:
+            r = conn.execute(
+                f"MATCH (a:{from_label} {{name: $n}})-[e:{rel}]->(b:{to_label}) "
+                f"RETURN a.{from_key} AS a, b.{to_key} AS b, "
+                f"       e.t_valid_start AS tvs, e.t_valid_end AS tve, "
+                f"       e.t_ingested AS tin, e.invalidated_by AS inv",
+                {"n": entity_name},
+            )
+        else:
+            r = conn.execute(
+                f"MATCH (a:{from_label})-[e:{rel}]->(b:{to_label} {{name: $n}}) "
+                f"RETURN a.{from_key} AS a, b.{to_key} AS b, "
+                f"       e.t_valid_start AS tvs, e.t_valid_end AS tve, "
+                f"       e.t_ingested AS tin, e.invalidated_by AS inv",
+                {"n": entity_name},
+            )
+        for row in r.get_as_df().to_dict(orient="records"):
+            row["rel"] = rel
+            results.append(row)
+
+    results.sort(key=lambda x: x.get("tvs") or datetime.min)
+    return results
+
+
+def _rel_endpoints(rel: str) -> tuple[str, str]:
+    """回傳 (from_label, to_label)。"""
+    mapping = {
+        "mem_person":   ("Memory", "Person"),
+        "mem_location": ("Memory", "Location"),
+        "mem_event":    ("Memory", "Event"),
+        "mem_period":   ("Memory", "Period"),
+        "event_loc":    ("Event",  "Location"),
+        "person_loc":   ("Person", "Location"),
+        "person_event": ("Person", "Event"),
+    }
+    return mapping[rel]
+
+
 # ─── CLI ────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -685,6 +894,10 @@ if __name__ == "__main__":
     ap.add_argument("--stats",    action="store_true", help="顯示統計")
     ap.add_argument("--search",   type=str, default="", help="圖搜尋測試（逗號分隔關鍵詞）")
     ap.add_argument("--ppr",      type=str, default="", help="PPR 擴散測試（逗號分隔 memory path）")
+    ap.add_argument("--backfill-temporal", action="store_true",
+                    help="The Two Rivers — 既有邊回填時間戳")
+    ap.add_argument("--timeline", type=str, default="",
+                    help="查詢某實體（Person/Location/Event）的時間線")
     args = ap.parse_args()
 
     if args.backfill:
@@ -708,6 +921,19 @@ if __name__ == "__main__":
         else:
             for i, path in enumerate(paths[:10], 1):
                 print(f"  #{i} {path}")
+
+    elif args.backfill_temporal:
+        print("[TAPESTRY] The Two Rivers begin to flow — backfilling timestamps...")
+        backfill_temporal(verbose=True)
+
+    elif args.timeline:
+        entries = get_entity_timeline(args.timeline)
+        print(f"[TAPESTRY] Timeline for {args.timeline!r} — {len(entries)} edges:")
+        for e in entries[:50]:
+            tvs = e.get("tvs")
+            tve = e.get("tve") or "…"
+            inv = e.get("inv") or "-"
+            print(f"  {tvs} → {tve}  [{e['rel']}] {e['a']} → {e['b']}  inv_by={inv}")
 
     elif args.ppr:
         seeds = [t.strip() for t in args.ppr.split(",") if t.strip()]

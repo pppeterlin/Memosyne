@@ -3,7 +3,7 @@
 > 持久化追蹤檔案。每次 commit 後請更新此檔狀態。
 > 詳細設計與依據：[優化方案_索引與保存管理.md](優化方案_索引與保存管理.md)
 > 分支：`v0.2`（將釋出為 v0.2.0；master 保留為 v0.1.0）
-> 最後更新：2026-04-22（HyQE 回填 + 索引重建完成）
+> 最後更新：2026-04-22（Phase 3.1/3.2/3.3 工程部分完成）
 
 ## 狀態圖例
 - [ ] pending
@@ -86,24 +86,25 @@
 ## Phase 3 — 時間與真實性（結構性升級）
 
 ### 3.1 Bi-temporal Tapestry（The Two Rivers）
-- [ ] Tapestry schema 升級：每條邊新增 `t_valid_start` / `t_valid_end` / `t_ingested` / `invalidated_by`
-- [ ] Migration script：既有邊 → `t_valid_start=t_ingested` / `t_valid_end=null`
-- [ ] 查詢介面：`as_of(ts)` / `currently_valid()` / `historical_beliefs()`
-- [ ] MCP 新增 `query_memory_at_time(query, timestamp)` 與 `get_entity_timeline(entity)`
+- [x] Tapestry schema 升級：每條 REL 邊新增 `t_valid_start` / `t_valid_end` / `t_ingested` / `invalidated_by`
+- [x] Migration script：`backfill_temporal()` 回填既有邊（3374 邊）
+- [x] 查詢介面：`currently_valid_edges()` / `edges_as_of(ts)` / `get_entity_timeline(entity)` / `invalidate_edge()`
+- [x] `weave_memory()` 使用 `ON CREATE SET` 寫入時間戳
+- [x] MCP 新增 `query_memory_at_time(query, timestamp)` 與 `get_entity_timeline(entity)`
 
 ### 3.2 The Ordeal（衝突處理 CRUD）
-- [ ] 在 `enrich.py` 或 Slumber 新增 conflict detection
-- [ ] LLM 輸出 operation ∈ {ADD, UPDATE, INVALIDATE, MERGE, NOOP}
-- [ ] 對應到 Tapestry 邊操作（UPDATE → 舊邊 `t_valid_end` 設定；INVALIDATE → 標記失效不刪）
-- [ ] Operation log（`ordeal_log.jsonl`），reversible
-- [ ] 對 personal_facts 優先啟用，逐步擴展
+- [x] 在 Slumber 新增 `the_ordeal()`（`--ordeal` 旗標）
+- [x] LLM 輸出 operation ∈ {ADD, UPDATE, INVALIDATE, NOOP}（MERGE 由 Naming Rite 處理）
+- [x] 對應到 Tapestry 邊操作（UPDATE/INVALIDATE → `invalidate_edge()` 標記 `t_valid_end`）
+- [x] Operation log（`ordeal_log.jsonl`），reversible
+- [x] 對 personal_facts 優先啟用（按 person 分組，≥2 mentions 觸發）
+- [ ] **[使用者任務]** 累積 personal_facts 後實測（目前 vault 無數據）
 
 ### 3.3 The Mirror of Truth（Self-RAG 批判）
-- [ ] `enrich.py` 產出後多一輪 LLM self-critique
-- [ ] 逐項檢查 YAML 欄位是否能在原文找到字面依據
-- [ ] 不支持項目 → 剔除或 `needs_review: true`
-- [ ] 可批次處理降低成本
-- [ ] 加入 `enrich.py --critique` 開關，先用於 high-importance 記憶
+- [x] `enrich.py --critique` 開關，產出後多一輪 LLM self-critique
+- [x] 逐項檢查 personal_facts / themes / period 的語意支持度
+- [x] unsupported → 剔除；partial → 保留並加入 `needs_review: []`
+- [x] `--critique-min-importance` 控制只對 high/medium 批判（預設 high，降低成本）
 
 ---
 

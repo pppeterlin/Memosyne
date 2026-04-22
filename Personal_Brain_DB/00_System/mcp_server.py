@@ -193,7 +193,7 @@ def optimize_memory(action: str = "all") -> str:
     定期執行以提煉洞察、強化關聯、清理冗餘、正規化實體。
 
     Args:
-        action: 'all' | 'reflect' | 'hebbian' | 'forget' | 'naming' | 'stats'
+        action: 'all' | 'reflect' | 'hebbian' | 'forget' | 'naming' | 'ordeal' | 'stats'
     """
     try:
         if action == "stats":
@@ -226,9 +226,15 @@ def optimize_memory(action: str = "all") -> str:
             count = naming_rite(dry_run=False)
             return f"The Naming Rite: {count} person names unified."
 
+        if action == "ordeal":
+            from slumber import the_ordeal
+            count = the_ordeal(dry_run=False)
+            return f"The Ordeal: {count} non-NOOP operations recorded."
+
         if action == "all":
             lines = []
-            from slumber import reflect, hebbian_learning, strategic_forgetting, naming_rite
+            from slumber import (reflect, hebbian_learning, strategic_forgetting,
+                                 naming_rite, the_ordeal)
             path = reflect(dry_run=False)
             lines.append(f"Reflection: {path or 'skipped'}")
             heb = hebbian_learning(dry_run=False)
@@ -237,12 +243,88 @@ def optimize_memory(action: str = "all") -> str:
             lines.append(f"Lethe: {fgt} dormant")
             nrt = naming_rite(dry_run=False)
             lines.append(f"Naming Rite: {nrt} unified")
+            ord_n = the_ordeal(dry_run=False)
+            lines.append(f"Ordeal: {ord_n} verdicts")
             return "The Rite of Slumber complete.\n" + "\n".join(lines)
 
-        return f"Unknown action: {action}. Use: all, reflect, hebbian, forget, naming, stats"
+        return f"Unknown action: {action}. Use: all, reflect, hebbian, forget, naming, ordeal, stats"
 
     except Exception as e:
         return f"The Rite faltered: {e}"
+
+
+@mcp.tool()
+def get_entity_timeline(entity: str, limit: int = 30) -> str:
+    """
+    The Two Rivers — 回傳某實體（人/地/事件）在 Tapestry 中的時間線。
+    每條邊顯示 t_valid_start → t_valid_end（NaT 表示目前仍有效）。
+
+    Args:
+        entity: 實體名稱（Person / Location / Event / Period）
+        limit:  最多回傳筆數（預設 30）
+    """
+    try:
+        from tapestry import get_entity_timeline as _timeline
+        entries = _timeline(entity)
+        if not entries:
+            return f"「{entity}」— No timeline. Unknown or isolated entity."
+        lines = [f"「{entity}」時間線（{len(entries)} 條邊）："]
+        for e in entries[:limit]:
+            tvs = e.get("tvs"); tve = e.get("tve")
+            inv = e.get("inv") or "-"
+            tve_str = str(tve) if tve else "still valid"
+            lines.append(
+                f"  {tvs} → {tve_str}  [{e['rel']}] {e['a']} → {e['b']}  inv_by={inv}"
+            )
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Timeline lookup faltered: {e}"
+
+
+@mcp.tool()
+def query_memory_at_time(query: str, timestamp: str, top_k: int = 5) -> str:
+    """
+    在指定時間點為錨點搜尋記憶：僅保留在 timestamp 當時其 Tapestry 邊仍有效的記憶。
+    適用於回溯性問題（「在 2024 年時，我的同事是誰？」）。
+
+    Args:
+        query:     查詢問題
+        timestamp: ISO 8601 格式（"2024-06-01" 或 "2024-06-01T00:00:00"）
+        top_k:     回傳筆數
+    """
+    try:
+        from datetime import datetime as _dt
+        from vectorize import search as hybrid_search
+        from tapestry import get_conn, edges_as_of, _REL_TABLES
+
+        # 解析時間
+        try:
+            ts = _dt.fromisoformat(timestamp)
+        except ValueError:
+            return f"時間格式錯誤：{timestamp}（請用 ISO 8601，如 2024-06-01）"
+
+        # 建立在 ts 當時有效的 memory 集合（以 mem_* 邊為依據）
+        conn = get_conn()
+        valid_mems: set[str] = set()
+        for rel in ("mem_person", "mem_location", "mem_event", "mem_period"):
+            for row in edges_as_of(conn, rel, ts):
+                valid_mems.add(row["a"])
+
+        raw = hybrid_search(query, top_k=top_k * 3)
+        filtered = [r for r in raw if r.get("path") in valid_mems][:top_k]
+
+        if not filtered:
+            return f"搜尋「{query}」@ {ts.date()} — No memory valid at that time."
+        lines = [f"搜尋「{query}」@ {ts.date()}（{len(filtered)} 筆，Tapestry 時空篩選）：\n"]
+        for i, r in enumerate(filtered):
+            lines.append(
+                f"#{i+1} {r.get('score',0):.3f} | {r.get('type','?')} | {r.get('date','')}\n"
+                f"  {r.get('title','')}  ←  {r.get('path','')}\n"
+                f"  {r.get('summary','')[:120]}"
+            )
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Time-anchored search faltered: {e}"
 
 
 @mcp.tool()
