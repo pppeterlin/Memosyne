@@ -3,7 +3,7 @@
 > 持久化追蹤檔案。每次 commit 後請更新此檔狀態。
 > 詳細設計與依據：[優化方案_索引與保存管理.md](優化方案_索引與保存管理.md)
 > 分支：`v0.2`（將釋出為 v0.2.0；master 保留為 v0.1.0）
-> 最後更新：2026-04-21
+> 最後更新：2026-04-22（HyQE 回填 + 索引重建完成）
 
 ## 狀態圖例
 - [ ] pending
@@ -54,18 +54,20 @@
 ## Phase 2 — 檢索深化
 
 ### 2.1 The Triple Echo（HyQE 多視角）
-- [ ] 在 `enrich.py` 新增 HyQE 產生步驟：每 chunk 產 3–5 個假設問題
-- [ ] YAML schema 加入 `hyqe_questions: []`
-- [ ] 修改 `vectorize.py`：嵌入三種視角（raw / summary / hyqe），metadata 加 `view ∈ {raw, summary, hyqe}`
-- [ ] `search()`：對同一 chunk_id 取最高分視角作為代表
-- [ ] Augury 對比
+- [x] 在 `enrich.py` 新增 HyQE 產生步驟：每 chunk 產 3–5 個假設問題
+- [x] YAML schema 加入 `hyqe_questions: []`
+- [x] 修改 `vectorize.py`：嵌入三種視角（raw / summary / hyqe），metadata 加 `view ∈ {raw, summary, hyqe}`
+- [x] `search()`：對同一 chunk_id 取最高分視角作為代表
+- [x] 對既有記憶庫批次回填（276 files / ~11,827 questions，via `proxy:claude-opus-4-6`；長文分批 30 段）
+- [x] 重建向量索引（ChromaDB 8,033 chunks，含 raw/summary/hyqe 三視角；BM25 3,858 raw）
+- [ ] **[使用者任務]** Augury 對比
 
 ### 2.2 The Invocation（繆思路由器）
-- [ ] 建立 `muses.py`：query → 1–3 位繆思的分類器（embedding 分類 or 輕量 LLM）
-- [ ] 訓練/準備 9 繆思的 prototype embedding（用各繆思領域現有記憶做 centroid）
-- [ ] 兩種模式：硬篩選（明確領域詞）/ 軟加權（×1.3）
-- [ ] MCP `query_memory` 接受 `muses=[]` 或 `auto_route=true`
-- [ ] Augury 對比
+- [x] 建立 `muses.py`：query → 1–3 位繆思的分類器（prototype centroid + cosine）
+- [x] 訓練/準備 9 繆思的 prototype embedding（用各繆思領域現有記憶做 centroid；seed < 3 的繆思略過）
+- [x] 兩種模式：硬篩選（`muse_mode="hard"`）/ 軟加權（`muse_mode="soft"` ×1.3）
+- [x] MCP `search_memory` 接受 `muses=[]` / `auto_route=true` / `muse_mode`
+- [ ] **[使用者任務]** Augury 對比
 
 ### 2.3 HippoRAG 2（短語+段落共圖）
 - [x] 修改 `tapestry.py`：PPR seed 同時接受 phrase node（entity）與 passage node（memory）

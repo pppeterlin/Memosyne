@@ -317,7 +317,7 @@ def generate_contextual_notes(
     一次 LLM 呼叫處理整份文件的所有段落，高效率。
     結果自動存入快取。
     """
-    import ollama
+    from llm_client import chat_text
 
     cache = _load_ctx_cache()
 
@@ -340,14 +340,12 @@ def generate_contextual_notes(
     )
 
     try:
-        resp = ollama.chat(
+        raw = chat_text(
             model=model,
             messages=[{"role": "user", "content": prompt}],
-            stream=False,
+            temperature=0,
             think=False,
-            options={"temperature": 0},
-        )
-        raw = resp["message"]["content"].strip()
+        ).strip()
 
         # 解析 JSON array
         start = raw.find("[")
@@ -437,7 +435,7 @@ def generate_hyqe_questions(
 
     一次 LLM 呼叫處理整份文件，結果存入 hyqe_cache.json。
     """
-    import ollama
+    from llm_client import chat_text
 
     cache = _load_hyqe_cache()
 
@@ -446,48 +444,50 @@ def generate_hyqe_questions(
     if all(k in cache for k in cache_keys):
         return [cache[k] for k in cache_keys]
 
-    # 準備 prompt
-    para_list = "\n".join(f"[{i}] {p[:200]}" for i, p in enumerate(paras))
-    body_trimmed = body[:3000]
-    if len(body) > 3000:
-        body_trimmed += "\n...[截斷]"
+    # 批次處理：長文件拆成多批，避免單次 JSON 輸出過長導致解析失敗
+    BATCH_SIZE = 30
+    questions_all: list[list[str]] = []
 
-    prompt = HYQE_PROMPT.format(
-        title=title or "(untitled)",
-        summary=summary or "(no summary)",
-        paragraphs=para_list,
-    )
-
-    try:
-        resp = ollama.chat(
+    def _run_batch(batch_paras: list[str], offset: int) -> list[list[str]]:
+        para_list = "\n".join(f"[{i}] {p[:200]}" for i, p in enumerate(batch_paras))
+        prompt = HYQE_PROMPT.format(
+            title=title or "(untitled)",
+            summary=summary or "(no summary)",
+            paragraphs=para_list,
+        )
+        raw = chat_text(
             model=model,
             messages=[{"role": "user", "content": prompt}],
-            stream=False,
+            temperature=0,
             think=False,
-            options={"temperature": 0},
-        )
-        raw = resp["message"]["content"].strip()
-
-        # 解析 JSON array of arrays
+        ).strip()
         start = raw.find("[")
         end = raw.rfind("]")
         if start == -1 or end == -1:
             raise ValueError(f"LLM 沒有回傳 JSON array：{raw[:200]}")
-        questions_all = json.loads(raw[start:end + 1])
-
-        # 確保長度匹配
-        if len(questions_all) < len(paras):
-            questions_all.extend([[] for _ in range(len(paras) - len(questions_all))])
-        questions_all = questions_all[:len(paras)]
-
-        # 確保每個元素都是 list[str]
-        for i, qs in enumerate(questions_all):
+        parsed = json.loads(raw[start:end + 1])
+        if len(parsed) < len(batch_paras):
+            parsed.extend([[] for _ in range(len(batch_paras) - len(parsed))])
+        parsed = parsed[:len(batch_paras)]
+        cleaned: list[list[str]] = []
+        for qs in parsed:
             if not isinstance(qs, list):
-                questions_all[i] = []
+                cleaned.append([])
             else:
-                questions_all[i] = [str(q) for q in qs if q][:5]
+                cleaned.append([str(q) for q in qs if q][:5])
+        return cleaned
 
-        # 存入快取
+    try:
+        for start_idx in range(0, len(paras), BATCH_SIZE):
+            batch = paras[start_idx:start_idx + BATCH_SIZE]
+            try:
+                batch_result = _run_batch(batch, start_idx)
+            except Exception as be:
+                print(f"  [HyQE] batch {start_idx}-{start_idx + len(batch) - 1} faltered for {rel_path}: {be}")
+                batch_result = [[] for _ in batch]
+            questions_all.extend(batch_result)
+
+        # 存入快取（每段獨立存，即使某批失敗其他批仍保留）
         for i, qs in enumerate(questions_all):
             cache[f"{rel_path}::para{i}"] = qs
         _save_hyqe_cache(cache)
@@ -928,7 +928,9 @@ def search_graph(query: str, top_k: int = 15, doc_type: str = "") -> list[dict]:
 
 
 def search(query: str, top_k: int = 5, doc_type: str = "",
-           record_access: bool = True, return_parent: bool = False) -> list[dict]:
+           record_access: bool = True, return_parent: bool = False,
+           muses: list[str] | None = None, auto_route: bool = False,
+           muse_mode: str = "soft") -> list[dict]:
     """
     三路 Hybrid search：Dense（ChromaDB）+ BM25 + Tapestry Graph → RRF 融合
     → ACT-R 認知衰減重排 → top_k 結果。
@@ -936,6 +938,9 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
     Args:
         return_parent: 若為 True，將 snippet 替換為命中 chunk 所屬的完整 parent section
                        （Small-to-Big：索引小片段，回傳大段落）
+        muses:      指定繆思列表（如 ["Clio","Calliope"]），限縮或加權至這些領域
+        auto_route: True 時自動 route(query) 選 top 2 位繆思（忽略 muses 參數除非已指定）
+        muse_mode:  "soft"（命中加權 ×1.3）或 "hard"（過濾掉非命中）
 
     降級策略：
     - 無 BM25 索引 → 跳過 BM25
@@ -1004,6 +1009,30 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
                     results = _rrf_merge_multi([results, ppr_list])
     except ImportError:
         pass
+
+    # ── The Invocation — 繆思路由器 ──
+    # soft: 命中繆思領域的記憶 score × boost；hard: 過濾掉非命中
+    active_muses: list[str] = list(muses) if muses else []
+    if auto_route and not active_muses:
+        try:
+            from muses import route as _muse_route
+            routed = _muse_route(query, top_k=2, threshold=0.20)
+            active_muses = [m for m, _ in routed]
+        except Exception:
+            active_muses = []
+    if active_muses:
+        try:
+            from muses import muse_boost_factor, filter_by_muses
+            if muse_mode == "hard":
+                results = filter_by_muses(results, active_muses)
+            else:
+                for r in results:
+                    r["score"] = round(
+                        r["score"] * muse_boost_factor(r, active_muses), 4
+                    )
+                results.sort(key=lambda x: x["score"], reverse=True)
+        except ImportError:
+            pass
 
     results = results[:top_k]
 
