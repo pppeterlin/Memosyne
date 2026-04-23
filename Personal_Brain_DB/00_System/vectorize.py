@@ -831,19 +831,25 @@ def _rrf_merge(
 
 # ─── 搜尋 ────────────────────────────────────────────────────
 
-def search_dense(query: str, top_k: int = 15, doc_type: str = "") -> list[dict]:
+def search_dense(query: str, top_k: int = 15, doc_type: str = "",
+                 exclude_views: list[str] | None = None) -> list[dict]:
     """
     Pure dense vector search（ChromaDB cosine similarity）。
     The Triple Echo：同一 path 可能有多個 view（raw / hyqe），取最高分視角。
+
+    exclude_views: 剔除指定 view 的 chunk（如 eval hygiene 時排除 hyqe 避免自我命中）。
     """
     _, col = get_collection()
     if col.count() == 0:
         return []
 
+    conds: list[dict] = [{"chunk_type": {"$eq": "paragraph"}}]
     if doc_type:
-        where = {"$and": [{"chunk_type": {"$eq": "paragraph"}}, {"type": {"$eq": doc_type}}]}
-    else:
-        where = {"chunk_type": {"$eq": "paragraph"}}
+        conds.append({"type": {"$eq": doc_type}})
+    if exclude_views:
+        for v in exclude_views:
+            conds.append({"view": {"$ne": v}})
+    where = conds[0] if len(conds) == 1 else {"$and": conds}
 
     # 多取一些結果以涵蓋不同 view 的 chunks
     n = min(top_k * 3, col.count())
@@ -962,7 +968,8 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
            muse_boost_max: float = 1.5,
            muse_penalty_k: float = 0.5,
            muse_penalty_min: float = 0.85,
-           route_top_k: int = 2) -> list[dict]:
+           route_top_k: int = 2,
+           exclude_views: list[str] | None = None) -> list[dict]:
     """
     三路 Hybrid search：Dense（ChromaDB）+ BM25 + Tapestry Graph → RRF 融合
     → ACT-R 認知衰減重排 → top_k 結果。
@@ -985,7 +992,8 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
     """
     FETCH = max(top_k * 3, 15)   # 各路各取多一點，RRF 後再截斷
 
-    dense_results = search_dense(query, top_k=FETCH, doc_type=doc_type)
+    dense_results = search_dense(query, top_k=FETCH, doc_type=doc_type,
+                                 exclude_views=exclude_views)
     ranked_lists  = [dense_results]
 
     if BM25_PATH.exists():
