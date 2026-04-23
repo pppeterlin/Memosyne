@@ -776,28 +776,38 @@ def search_bm25(query: str, top_k: int = 15, doc_type: str = "") -> list[dict]:
 def _rrf_merge_multi(
     ranked_lists: list[list[dict]],
     k: int = 60,
+    weights: list[float] | None = None,
 ) -> list[dict]:
     """
     多路 Reciprocal Rank Fusion。
 
-    RRF(d) = Σ 1/(k + rank_i(d))
+    RRF(d) = Σ w_i × 1/(k + rank_i(d))
     k=60 是常用預設值（論文建議）。
+    weights 可為每個 ranked list 指定權重（預設全 1.0）。
 
-    接受任意數量的排名列表（dense / bm25 / graph），
+    接受任意數量的排名列表（dense / bm25 / graph / PPR），
     回傳按 RRF 分數排序的去重結果列表。
     """
+    if weights is None:
+        weights = [1.0] * len(ranked_lists)
     rrf_scores: dict[str, float] = {}
     all_items:  dict[str, dict]  = {}
 
-    for ranked in ranked_lists:
+    for ranked, w in zip(ranked_lists, weights):
         for rank, item in enumerate(ranked):
             path = item["path"]
-            rrf_scores[path] = rrf_scores.get(path, 0.0) + 1.0 / (k + rank + 1)
+            rrf_scores[path] = rrf_scores.get(path, 0.0) + w * 1.0 / (k + rank + 1)
             if path not in all_items:
                 all_items[path] = item
 
     ranked_final = sorted(rrf_scores.items(), key=lambda x: -x[1])
-    return [all_items[path] for path, _ in ranked_final]
+    # RRF 分數覆寫 item["score"]，讓後續加成/排序可以一致處理
+    output: list[dict] = []
+    for path, rrf_score in ranked_final:
+        item = all_items[path]
+        item["score"] = round(rrf_score, 6)
+        output.append(item)
+    return output
 
 
 def _rrf_merge(
@@ -982,12 +992,16 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
         results = _rrf_merge_multi(ranked_lists)
 
     # ── PPR Spreading Activation（HippoRAG 2 — 傳播激發補充）──
-    # 用現有搜尋結果 + query 實體作為 seed，在圖譜中擴散
+    # 設計定位：PPR 是「輔助訊號」，不應獨立決定排名。
+    # 做法：只對已在三路 RRF 結果中的文件 applied additive bonus（PPR score × alpha），
+    #       不引入「僅圖關聯但文字不相關」的噪聲檔案。
+    # PPR 加成上限。RRF 分數範圍約 [0, 0.033]（k=60，雙路理論上限 2/61），
+    # 故 alpha 必須與之同量級；否則 PPR 會直接壓過 RRF。
+    PPR_ALPHA = 0.015
     try:
         from tapestry import spreading_activation, TAPESTRY_DB
-        if TAPESTRY_DB.exists():
+        if TAPESTRY_DB.exists() and results:
             seed_paths = [r["path"] for r in results[:5]]
-            # HippoRAG 2: 從 query 提取實體作為 phrase node seeds
             query_entities = [
                 w for w in re.findall(r'[\u4e00-\u9fff]{2,}|[a-zA-Z][\w-]+', query)
                 if len(w) >= 2
@@ -996,32 +1010,15 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
                 seed_paths, top_k=FETCH, seed_entities=query_entities
             )
             if ppr_results:
-                # 從 BM25 metas 取 metadata
-                _, _, bm25_metas, _ = load_bm25()
-                meta_by_path: dict[str, dict] = {}
-                for m in bm25_metas:
-                    p = m.get("path", "")
-                    if p and p not in meta_by_path:
-                        meta_by_path[p] = m
-
-                ppr_list: list[dict] = []
-                for path, ppr_score in ppr_results:
-                    m = meta_by_path.get(path, {})
-                    if doc_type and m.get("type", "") != doc_type:
-                        continue
-                    ppr_list.append({
-                        "score":     round(ppr_score * 10, 4),  # PPR 分數 scaling
-                        "title":     m.get("title", path),
-                        "path":      path,
-                        "date":      m.get("date", ""),
-                        "type":      m.get("type", ""),
-                        "summary":   m.get("summary", ""),
-                        "period":    m.get("period", ""),
-                        "locations": m.get("locations", ""),
-                        "snippet":   "",
-                    })
-                if ppr_list:
-                    results = _rrf_merge_multi([results, ppr_list])
+                ppr_by_path = {p: s for p, s in ppr_results}
+                max_ppr = max(ppr_by_path.values()) if ppr_by_path else 0.0
+                if max_ppr > 0:
+                    # 正規化 PPR 分數到 [0, 1]，再乘 alpha 當作加成
+                    for r in results:
+                        ppr_s = ppr_by_path.get(r["path"], 0.0)
+                        if ppr_s > 0:
+                            r["score"] = round(r["score"] + PPR_ALPHA * (ppr_s / max_ppr), 4)
+                    results.sort(key=lambda x: x["score"], reverse=True)
     except ImportError:
         pass
 
