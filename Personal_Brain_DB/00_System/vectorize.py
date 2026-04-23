@@ -599,6 +599,16 @@ def build_chunks(rel_path: str, fm: dict, body: str) -> list[dict]:
 
 EXCLUDE_FILES = {"README.md", ".cursorrules"}
 
+
+def _rel_path(md_file: Path) -> str:
+    """相對路徑正規化：_vault 是私有 submodule，對外路徑應隱藏此前綴，
+    保持與 HyQE cache / Tapestry / 舊索引一致。"""
+    rel = str(md_file.relative_to(BASE))
+    if rel.startswith("_vault/"):
+        rel = rel[len("_vault/"):]
+    return rel
+
+
 def collect_all_chunks() -> list[dict]:
     all_chunks = []
     for md_file in sorted(BASE.rglob("*.md")):
@@ -610,7 +620,7 @@ def collect_all_chunks() -> list[dict]:
             content = md_file.read_text(encoding="utf-8")
         except Exception:
             continue
-        rel = str(md_file.relative_to(BASE))
+        rel = _rel_path(md_file)
         fm, body = parse_frontmatter(content)
         # 排除 dormant 記憶（The Lethe Protocol）
         if fm.get("dormant") in (True, "true", "True"):
@@ -1192,7 +1202,7 @@ def contextualize_all(model: str = CTX_MODEL, rebuild: bool = False):
         except Exception:
             continue
 
-        rel = str(md_file.relative_to(BASE))
+        rel = _rel_path(md_file)
         fm, body = parse_frontmatter(content)
         paras = semantic_paragraphs(body)
         if not paras:
@@ -1246,7 +1256,7 @@ def hyqe_all(model: str = CTX_MODEL, rebuild: bool = False):
         except Exception:
             continue
 
-        rel = str(md_file.relative_to(BASE))
+        rel = _rel_path(md_file)
         fm, body = parse_frontmatter(content)
         paras = semantic_paragraphs(body)
         if not paras:
