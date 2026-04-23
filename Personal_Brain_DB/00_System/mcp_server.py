@@ -354,5 +354,121 @@ def get_memory_health() -> str:
         return f"The Chronicle faltered: {e}"
 
 
+# ──────────────────────────────────────────────────────────
+#  Aletheia — 對話式記憶更正（Phase 6）
+# ──────────────────────────────────────────────────────────
+
+def _aletheia_summarize(entry: dict) -> str:
+    op = entry.get("op", "?")
+    path = entry.get("path", "?")
+    log_id = entry.get("id", "(dry-run)")
+    head = f"📜 Aletheia · {op} · {path} · log_id={log_id}"
+    if op == "ADD_FACT":
+        return f"{head}\n  added: {entry.get('added')}"
+    if op == "INVALIDATE_FACT":
+        return f"{head}\n  removed: {entry.get('removed')}"
+    if op == "UPDATE_FACT":
+        return (f"{head}\n  before: {entry.get('before')}\n"
+                f"  after:  {entry.get('after')}")
+    if op == "CORRECT_TEXT":
+        return (f"{head}\n  old: {entry.get('old')}\n"
+                f"  new: {entry.get('new')}")
+    return head
+
+
+@mcp.tool()
+def aletheia_add_fact(path: str, fact: str, apply: bool = False) -> str:
+    """
+    Aletheia — 新增一條 personal_fact 到指定記憶。
+
+    預設 dry-run（只顯示預期變更），apply=True 才寫入。所有操作寫入
+    aletheia_log.jsonl，可用 aletheia_revert 復原。
+
+    Args:
+        path: vault 內相對路徑（如 30_Journal/2026/260223.md）
+        fact: 要新增的事實句（建議 < 30 字）
+        apply: True 才實際寫入
+    """
+    try:
+        from aletheia import add_fact
+        entry = add_fact(path, fact, apply=apply)
+        return _aletheia_summarize(entry) + ("" if apply else "\n(dry-run; set apply=True to write)")
+    except Exception as e:
+        return f"Aletheia faltered: {e}"
+
+
+@mcp.tool()
+def aletheia_update_fact(path: str, old: str, new: str, apply: bool = False) -> str:
+    """
+    Aletheia — 更新一條 personal_fact（substring match，必須唯一）。
+
+    Args:
+        path: vault 內相對路徑
+        old:  要被取代的事實（提供能唯一匹配的 substring 即可）
+        new:  新的事實句
+        apply: True 才實際寫入
+    """
+    try:
+        from aletheia import update_fact
+        entry = update_fact(path, old, new, apply=apply)
+        return _aletheia_summarize(entry) + ("" if apply else "\n(dry-run)")
+    except Exception as e:
+        return f"Aletheia faltered: {e}"
+
+
+@mcp.tool()
+def aletheia_invalidate_fact(path: str, match: str, apply: bool = False) -> str:
+    """
+    Aletheia — 移除（invalidate）一條 personal_fact。
+
+    Args:
+        path:  vault 內相對路徑
+        match: 要被移除的事實（substring，必須唯一）
+        apply: True 才實際寫入
+    """
+    try:
+        from aletheia import invalidate_fact
+        entry = invalidate_fact(path, match, apply=apply)
+        return _aletheia_summarize(entry) + ("" if apply else "\n(dry-run)")
+    except Exception as e:
+        return f"Aletheia faltered: {e}"
+
+
+@mcp.tool()
+def aletheia_correct_text(path: str, old: str, new: str, apply: bool = False) -> str:
+    """
+    Aletheia — 在記憶 body 做 literal substring 替換（old 必須唯一出現）。
+
+    Args:
+        path: vault 內相對路徑
+        old:  要被替換的 substring（必須在 body 中唯一出現）
+        new:  替換後的文字
+        apply: True 才實際寫入
+    """
+    try:
+        from aletheia import correct_text
+        entry = correct_text(path, old, new, apply=apply)
+        return _aletheia_summarize(entry) + ("" if apply else "\n(dry-run)")
+    except Exception as e:
+        return f"Aletheia faltered: {e}"
+
+
+@mcp.tool()
+def aletheia_revert(log_id: str, apply: bool = False) -> str:
+    """
+    Aletheia — 根據 log_id 復原先前的操作。
+
+    Args:
+        log_id: 先前操作回傳的 log_id
+        apply:  True 才實際寫入
+    """
+    try:
+        from aletheia import revert
+        entry = revert(log_id, apply=apply)
+        return _aletheia_summarize(entry) + ("" if apply else "\n(dry-run)")
+    except Exception as e:
+        return f"Aletheia faltered: {e}"
+
+
 if __name__ == "__main__":
     mcp.run()
