@@ -334,6 +334,33 @@ def muse_boost_factor_confidence(
     return best
 
 
+def muse_penalty_factor_confidence(
+    meta: dict,
+    muse_scores: dict[str, float],
+    threshold: float = 0.20,
+    k: float = 0.5,
+    min_factor: float = 0.85,
+) -> float:
+    """
+    Soft penalty：只對非命中繆思按 router 信心扣分，命中者維持 ×1.0。
+
+    公式（非命中）：factor = 1 - (max_router_score - threshold) × k，clamp 至 [min_factor, 1.0]
+      - router 信心低（score ≤ threshold）→ factor = 1.0（不扣分）
+      - router 信心高 → factor 接近 min_factor（最多扣 15%）
+
+    相較於 boost 版，避免「命中者被抬到天花板、其他人全被壓出 top-10」的副作用。
+    """
+    if not muse_scores:
+        return 1.0
+    if any(muse_matches(meta, m) for m in muse_scores):
+        return 1.0
+    max_score = max(muse_scores.values())
+    factor = 1.0 - max(0.0, max_score - threshold) * k
+    if factor < min_factor:
+        factor = min_factor
+    return factor
+
+
 def filter_by_muses(results: list[dict], muses: list[str]) -> list[dict]:
     """Hard filter：只保留屬於指定繆思之一的結果。"""
     if not muses:

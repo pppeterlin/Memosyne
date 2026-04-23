@@ -69,13 +69,17 @@
 - [x] MCP `search_memory` 接受 `muses=[]` / `auto_route=true` / `muse_mode`
 - [x] **Confidence-scaled boost（adaptive，v0.2 預設）**：`boost = 1 + (router_score - threshold) × k`，clamp 至 `muse_boost_max`
   - Eternal Mirror N=500 對比（2026-04-23）：
-    | 指標 | Baseline | Flat ×1.30 | **Adaptive** |
-    |---|---:|---:|---:|
-    | R@1 | 0.036 | 0.104 | **0.108** |
-    | R@5 | 0.102 | 0.148 | **0.150** |
-    | R@10 | **0.248** | 0.172 | 0.174 |
-    | MRR | 0.075 | 0.125 | **0.128** |
-  - 預設參數：`auto_route_threshold=0.20, muse_boost_k=2.0, muse_boost_max=1.5`
+    | 指標 | Baseline | Flat ×1.30 | **Adaptive (soft)** | Penalty | Boost top-3 |
+    |---|---:|---:|---:|---:|---:|
+    | R@1 | 0.036 | 0.104 | **0.108** | 0.102 | 0.100 |
+    | R@5 | 0.102 | 0.148 | **0.150** | 0.142 | 0.140 |
+    | R@10 | **0.248** | 0.172 | 0.174 | 0.164 | 0.166 |
+    | MRR | 0.075 | 0.125 | **0.128** | 0.121 | 0.119 |
+  - 預設：`muse_mode="soft", auto_route_threshold=0.20, muse_boost_k=2.0, muse_boost_max=1.5, route_top_k=2`
+  - **R@10 結構性代價**：任何繆思加權都會把 graph/PPR 找到的長尾結果壓出 top-10（baseline 0.248 vs soft 0.174）。
+    試過 `muse_mode="penalty"`（非命中扣分）與 `route_top_k=3`（router 覆蓋加寬），皆未救回 R@10。
+    Trade-off 結論：accept R@10 代價以換 R@1/R@5/MRR，因為個人搜尋情境 top-5 優先。
+  - Alternative `muse_mode="penalty"` 保留供需要時啟用（`muse_penalty_k=0.5, muse_penalty_min=0.85`）。
 
 ### 2.3 HippoRAG 2（短語+段落共圖）
 - [x] 修改 `tapestry.py`：PPR seed 同時接受 phrase node（entity）與 passage node（memory）

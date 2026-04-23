@@ -934,7 +934,10 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
            muse_boost: float = 1.3,
            auto_route_threshold: float = 0.20,
            muse_boost_k: float = 2.0,
-           muse_boost_max: float = 1.5) -> list[dict]:
+           muse_boost_max: float = 1.5,
+           muse_penalty_k: float = 0.5,
+           muse_penalty_min: float = 0.85,
+           route_top_k: int = 2) -> list[dict]:
     """
     三路 Hybrid search：Dense（ChromaDB）+ BM25 + Tapestry Graph → RRF 融合
     → ACT-R 認知衰減重排 → top_k 結果。
@@ -944,7 +947,10 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
                        （Small-to-Big：索引小片段，回傳大段落）
         muses:      指定繆思列表（如 ["Clio","Calliope"]），限縮或加權至這些領域
         auto_route: True 時自動 route(query) 選 top 2 位繆思（忽略 muses 參數除非已指定）
-        muse_mode:  "soft"（命中加權 ×1.3）或 "hard"（過濾掉非命中）
+        muse_mode:  "soft"（預設：命中按 router 信心加分 up to ×1.5，Pareto 最佳）
+                    "penalty"（非命中按 router 信心扣分 down to ×0.85；R@1/R@5 略弱於 soft）
+                    "hard"（只保留命中繆思）
+        route_top_k: auto_route 選幾位繆思（預設 2；實測 top-3 反而略差）
 
     降級策略：
     - 無 BM25 索引 → 跳過 BM25
@@ -1021,18 +1027,32 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
     if auto_route and not active_muses:
         try:
             from muses import route as _muse_route
-            routed = _muse_route(query, top_k=2, threshold=auto_route_threshold)
+            routed = _muse_route(query, top_k=route_top_k, threshold=auto_route_threshold)
             active_muses = [m for m, _ in routed]
             muse_scores = {m: s for m, s in routed}
         except Exception:
             active_muses = []
     if active_muses:
         try:
-            from muses import muse_boost_factor, muse_boost_factor_confidence, filter_by_muses
+            from muses import (
+                muse_boost_factor,
+                muse_boost_factor_confidence,
+                muse_penalty_factor_confidence,
+                filter_by_muses,
+            )
             if muse_mode == "hard":
                 results = filter_by_muses(results, active_muses)
+            elif muse_mode == "penalty" and muse_scores:
+                for r in results:
+                    f = muse_penalty_factor_confidence(
+                        r, muse_scores,
+                        threshold=auto_route_threshold,
+                        k=muse_penalty_k,
+                        min_factor=muse_penalty_min,
+                    )
+                    r["score"] = round(r["score"] * f, 4)
+                results.sort(key=lambda x: x["score"], reverse=True)
             elif muse_boost_k > 0 and muse_scores:
-                # Confidence-scaled boost
                 for r in results:
                     f = muse_boost_factor_confidence(
                         r, muse_scores,
