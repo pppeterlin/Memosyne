@@ -1083,12 +1083,22 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
         except ImportError:
             pass
 
-    # ── AI 對話分流（Phase 4.4）──
-    # 純 knowledge 型 AI 對話（客觀技術問答）對個人記憶檢索相關性低，溫和降權。
-    for r in results:
-        if r.get("chat_category") == "knowledge":
-            r["score"] = round(r["score"] * 0.85, 4)
-    results.sort(key=lambda x: x["score"], reverse=True)
+    # ── AI 對話分流（Phase 4.4，預設停用）──
+    # 原假設：純 knowledge 型 AI 對話對個人記憶檢索相關性低，應降權。
+    # 實證（Eternal Mirror N=500）：
+    #   penalty=0.85 → R@1 0.110 / MRR 0.309
+    #   penalty=0.95 → R@1 0.114 / MRR 0.309
+    #   penalty=1.00 → R@1 0.118 / MRR 0.312  ← 勝出
+    # 任何降權都輕微傷 R@1，R@10 不變。Downweight 並未提升檢索品質，
+    # 故預設停用。chat_category metadata 仍保留，供未來 query-specific
+    # 路由或 UI filtering 使用。env var 保留以便日後實驗。
+    import os
+    _cat_penalty = float(os.getenv("CHAT_CATEGORY_KNOWLEDGE_PENALTY", "1.0"))
+    if _cat_penalty < 1.0:
+        for r in results:
+            if r.get("chat_category") == "knowledge":
+                r["score"] = round(r["score"] * _cat_penalty, 4)
+        results.sort(key=lambda x: x["score"], reverse=True)
 
     results = results[:top_k]
 
