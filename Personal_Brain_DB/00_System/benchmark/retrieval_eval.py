@@ -204,14 +204,38 @@ def latest_prev_report(config_name: str, exclude: Path) -> Path | None:
     return None
 
 
-def print_diff(cur: Path, prev: Path) -> None:
+# ── 回歸閾值（Phase 5.2）──
+# 任一指標跌幅超過下列比例即觸發警告/失敗，避免靜默退步。
+REGRESSION_THRESHOLDS = {
+    "recall@1":  0.02,
+    "recall@5":  0.02,
+    "recall@10": 0.02,
+    "mrr":       0.02,
+}
+
+
+def print_diff(cur: Path, prev: Path, fail_on_regression: bool = False) -> int:
+    """回傳退步指標數（>=1 且 fail_on_regression 時 exit non-zero）。"""
     c = json.loads(cur.read_text())["metrics"]
     p = json.loads(prev.read_text())["metrics"]
     print(f"\n📊 Diff vs {prev.name}")
+    regressions = 0
     for k in ("recall@1", "recall@5", "recall@10", "mrr"):
         delta = c[k] - p[k]
-        arrow = "▲" if delta > 0.005 else ("▼" if delta < -0.005 else "・")
+        threshold = REGRESSION_THRESHOLDS.get(k, 0.02)
+        if delta > 0.005:
+            arrow = "▲"
+        elif delta < -threshold:
+            arrow = "🚨"
+            regressions += 1
+        elif delta < -0.005:
+            arrow = "▼"
+        else:
+            arrow = "・"
         print(f"  {arrow} {k:<10}  {p[k]:.3f} → {c[k]:.3f}  ({delta:+.3f})")
+    if regressions:
+        print(f"\n⚠️  {regressions} 項指標超出 {int(list(REGRESSION_THRESHOLDS.values())[0]*100)}% 退步閾值")
+    return regressions
 
 
 # ── main ──────────────────────────────────────────────────
@@ -222,10 +246,17 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--config", default="baseline", choices=list(CONFIGS.keys()))
     ap.add_argument("--diff", action="store_true", help="與上一份同 config 報告比對")
+    ap.add_argument("--fail-on-regression", action="store_true",
+                    help="--diff 搭配：任一指標跌幅 >2% 時 exit 1（CI 用）")
+    ap.add_argument("--hygiene", action="store_true",
+                    help="Eval hygiene：排除 hyqe view，避免自我命中（資料洩漏）")
     args = ap.parse_args()
 
-    config = CONFIGS[args.config]
-    print(f"🪞 Eternal Mirror · config={args.config}  n={args.n}  top_k={args.top_k}  seed={args.seed}")
+    config = dict(CONFIGS[args.config])
+    if args.hygiene:
+        config["exclude_views"] = ["hyqe"]
+    tag = f"{args.config}{'_hygiene' if args.hygiene else ''}"
+    print(f"🪞 Eternal Mirror · config={tag}  n={args.n}  top_k={args.top_k}  seed={args.seed}")
     samples = load_samples(args.n, args.seed)
     print(f"   loaded {len(samples)} samples from hyqe_cache.json")
 
@@ -237,7 +268,7 @@ def main() -> None:
           f"MRR={metrics['mrr']:.3f}")
 
     meta = {
-        "config_name": args.config,
+        "config_name": tag,
         "config":      config,
         "top_k":       args.top_k,
         "seed":        args.seed,
@@ -247,9 +278,11 @@ def main() -> None:
     print(f"📝 報告：{out}")
 
     if args.diff:
-        prev = latest_prev_report(args.config, out)
+        prev = latest_prev_report(tag, out)
         if prev:
-            print_diff(out, prev)
+            regressions = print_diff(out, prev, args.fail_on_regression)
+            if args.fail_on_regression and regressions:
+                sys.exit(1)
         else:
             print("（無上一份報告可比對）")
 
