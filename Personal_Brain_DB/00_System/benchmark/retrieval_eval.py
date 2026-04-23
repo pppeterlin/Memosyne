@@ -35,7 +35,8 @@ from vectorize import search  # noqa: E402
 
 HYQE_CACHE = SYSTEM_DIR / "hyqe_cache.json"
 REPORTS_DIR = Path(__file__).resolve().parent / "reports"
-REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+if not REPORTS_DIR.exists():
+    REPORTS_DIR.mkdir(parents=True)
 
 
 # ── 資料類型推斷（path → 繆思領域） ─────────────────────────
@@ -57,12 +58,17 @@ def muse_of(path: str) -> str:
 
 # ── 設定 profiles ─────────────────────────────────────────
 CONFIGS = {
-    "baseline":     dict(auto_route=False, muse_mode="soft", return_parent=False),
-    "full":         dict(auto_route=True,  muse_mode="soft", return_parent=True, muse_boost=1.30, auto_route_threshold=0.20),
-    "full_light":   dict(auto_route=True,  muse_mode="soft", return_parent=True, muse_boost=1.15, auto_route_threshold=0.20),
-    "full_strict":  dict(auto_route=True,  muse_mode="soft", return_parent=True, muse_boost=1.30, auto_route_threshold=0.30),
-    "full_gentle":  dict(auto_route=True,  muse_mode="soft", return_parent=True, muse_boost=1.10, auto_route_threshold=0.30),
-    "hard":         dict(auto_route=True,  muse_mode="hard", return_parent=True),
+    # No muse routing — 純 hybrid RRF（參考基準）
+    "baseline": dict(auto_route=False, muse_mode="soft", return_parent=False, muse_boost_k=0.0),
+    # 當前預設：auto_route + confidence-scaled boost（adaptive）
+    #   boost = 1 + (router_score - threshold) × k, clamped to max
+    "full":     dict(auto_route=True,  muse_mode="soft", return_parent=True,
+                     auto_route_threshold=0.20, muse_boost_k=2.0, muse_boost_max=1.5),
+    # 歷史對照：flat boost（v0.1 舊行為）
+    "flat":     dict(auto_route=True,  muse_mode="soft", return_parent=True,
+                     muse_boost=1.30, auto_route_threshold=0.20, muse_boost_k=0.0),
+    # Hard filter：非命中繆思直接剔除
+    "hard":     dict(auto_route=True,  muse_mode="hard", return_parent=True, muse_boost_k=0.0),
 }
 
 

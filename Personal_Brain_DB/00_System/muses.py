@@ -303,6 +303,37 @@ def muse_boost_factor(meta: dict, muses: list[str], boost: float = 1.3) -> float
     return 1.0
 
 
+def muse_boost_factor_confidence(
+    meta: dict,
+    muse_scores: dict[str, float],
+    threshold: float = 0.20,
+    k: float = 2.0,
+    max_boost: float = 1.5,
+) -> float:
+    """
+    Confidence-scaled boost：boost 強度隨 router 對該繆思的信心線性成長。
+
+    公式：boost = 1 + (router_score - threshold) × k，clamp 至 [1.0, max_boost]
+      - router_score ≤ threshold → boost = 1.0（不加分）
+      - router_score = threshold + 0.10, k=2 → boost = 1.20
+      - router_score ≥ threshold + (max_boost-1)/k → boost = max_boost（封頂）
+
+    若 meta 匹配多位繆思，取最高 boost。
+    """
+    if not muse_scores:
+        return 1.0
+    best = 1.0
+    for muse, score in muse_scores.items():
+        if not muse_matches(meta, muse):
+            continue
+        b = 1.0 + max(0.0, score - threshold) * k
+        if b > max_boost:
+            b = max_boost
+        if b > best:
+            best = b
+    return best
+
+
 def filter_by_muses(results: list[dict], muses: list[str]) -> list[dict]:
     """Hard filter：只保留屬於指定繆思之一的結果。"""
     if not muses:

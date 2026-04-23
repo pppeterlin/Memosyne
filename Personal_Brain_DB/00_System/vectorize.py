@@ -932,7 +932,9 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
            muses: list[str] | None = None, auto_route: bool = False,
            muse_mode: str = "soft",
            muse_boost: float = 1.3,
-           auto_route_threshold: float = 0.20) -> list[dict]:
+           auto_route_threshold: float = 0.20,
+           muse_boost_k: float = 2.0,
+           muse_boost_max: float = 1.5) -> list[dict]:
     """
     三路 Hybrid search：Dense（ChromaDB）+ BM25 + Tapestry Graph → RRF 融合
     → ACT-R 認知衰減重排 → top_k 結果。
@@ -1015,18 +1017,31 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
     # ── The Invocation — 繆思路由器 ──
     # soft: 命中繆思領域的記憶 score × boost；hard: 過濾掉非命中
     active_muses: list[str] = list(muses) if muses else []
+    muse_scores: dict[str, float] = {}
     if auto_route and not active_muses:
         try:
             from muses import route as _muse_route
             routed = _muse_route(query, top_k=2, threshold=auto_route_threshold)
             active_muses = [m for m, _ in routed]
+            muse_scores = {m: s for m, s in routed}
         except Exception:
             active_muses = []
     if active_muses:
         try:
-            from muses import muse_boost_factor, filter_by_muses
+            from muses import muse_boost_factor, muse_boost_factor_confidence, filter_by_muses
             if muse_mode == "hard":
                 results = filter_by_muses(results, active_muses)
+            elif muse_boost_k > 0 and muse_scores:
+                # Confidence-scaled boost
+                for r in results:
+                    f = muse_boost_factor_confidence(
+                        r, muse_scores,
+                        threshold=auto_route_threshold,
+                        k=muse_boost_k,
+                        max_boost=muse_boost_max,
+                    )
+                    r["score"] = round(r["score"] * f, 4)
+                results.sort(key=lambda x: x["score"], reverse=True)
             else:
                 for r in results:
                     r["score"] = round(
