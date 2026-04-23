@@ -58,6 +58,7 @@ EMPTY_ENRICHMENT = {
     "period":        "",
     "importance":    "medium",
     "personal_facts": [],
+    "chat_category": "",   # 僅 20_AI_Chats 使用：personal / knowledge / mixed
 }
 
 # ─── Frontmatter 解析與回寫 ───────────────────────────────────
@@ -119,6 +120,9 @@ def rewrite_file_with_enrichment(path: Path, enrichment: dict, dry_run: bool) ->
     if needs_review:
         review_line = f"\nneeds_review: {json.dumps(needs_review, ensure_ascii=False)}"
 
+    cat = enrichment.get("chat_category", "")
+    cat_line = f'\nchat_category: "{cat}"' if cat else ""
+
     enrich_block = f"""
 # ── Enrichment（LLM 語意增強，僅含原文出現的實體）──
 enriched_at: "{now}"
@@ -126,7 +130,7 @@ importance: {imp}
 period: "{period}"
 themes: {themes}
 personal_facts: {facts}
-hyqe_questions: []{review_line}
+hyqe_questions: []{cat_line}{review_line}
 entities:
   locations: {locs}
   people: {people}
@@ -164,7 +168,12 @@ THE LAWS OF THE ORACLE（不可違背）:
    These are personal experiences or facts, NOT reference knowledge or objective information.
    Example: "friend-A 住在 Tokyo" = personal fact.   "Tokyo is the capital of Japan" = reference, exclude it.
    Max 5 items. Each must be a concise statement (under 30 chars). Return [] if none.
-8. Speak ONLY in pure JSON — no preamble, no explanation, no commentary
+8. chat_category: ONLY for AI-chat records (when is_ai_chat=True below). Classify this conversation:
+   - "personal"  = about the author's life/emotions/decisions/relationships
+   - "knowledge" = pure factual/technical Q&A with no personal stake (e.g. "how does X work", "what is Y")
+   - "mixed"     = personal framing but requesting general knowledge
+   For non-chat records, return "".
+9. Speak ONLY in pure JSON — no preamble, no explanation, no commentary
 
 The inscription must be precise. Let the Oracle speak:
 
@@ -178,17 +187,20 @@ The inscription must be precise. Let the Oracle speak:
   "themes": ["主題標籤，最多4個"],
   "period": "語意時期描述或空字串",
   "importance": "low/medium/high",
-  "personal_facts": ["作者個人生活事實（非客觀知識），最多5條"]
+  "personal_facts": ["作者個人生活事實（非客觀知識），最多5條"],
+  "chat_category": "personal | knowledge | mixed | <空字串>"
 }}
 
 Memory title: {title}
 Filename hint（档名關鍵詞，僅供參考 — 必須驗證於正文中才可使用）: {filename_hint}
+is_ai_chat: {is_ai_chat}
 Memory fragment:
 {content}
 """
 
 
-def call_llm(title: str, content: str, model: str, filename_hint: list = None) -> dict:
+def call_llm(title: str, content: str, model: str, filename_hint: list = None,
+             is_ai_chat: bool = False) -> dict:
     """呼叫 LLM（Ollama / OpenRouter），回傳 enrichment dict。"""
     from llm_client import chat_text
 
@@ -203,6 +215,7 @@ def call_llm(title: str, content: str, model: str, filename_hint: list = None) -
     prompt = ENRICHMENT_PROMPT.format(
         title=title,
         filename_hint=hint_str,
+        is_ai_chat=str(is_ai_chat),
         content=content_trimmed,
     )
 
@@ -292,7 +305,13 @@ def validate_entities(enrichment: dict, original_text: str) -> dict:
         "period":         enrichment.get("period", ""),
         "importance":     enrichment.get("importance", "medium"),
         "personal_facts": [],
+        "chat_category":  "",
     }
+
+    # chat_category 白名單（僅接受四個值；其他一律回空）
+    raw_cat = enrichment.get("chat_category", "")
+    if isinstance(raw_cat, str) and raw_cat.strip().lower() in {"personal", "knowledge", "mixed"}:
+        result["chat_category"] = raw_cat.strip().lower()
 
     entities = enrichment.get("entities", {})
 
@@ -525,7 +544,10 @@ def enrich_all(model: str, rebuild: bool, dry_run: bool, target_file: str | None
         print(f"[{i}/{total}] {path.relative_to(BASE)} ... ", end="", flush=True)
 
         try:
-            raw_enrichment  = call_llm(title, full_text, model, filename_hint=fname_hint)
+            rel = str(path.relative_to(BASE))
+            is_chat = rel.startswith("20_AI_Chats/")
+            raw_enrichment  = call_llm(title, full_text, model,
+                                       filename_hint=fname_hint, is_ai_chat=is_chat)
             enrichment      = validate_entities(raw_enrichment, full_text)
             enrichment      = resolve_person_aliases(enrichment)
 

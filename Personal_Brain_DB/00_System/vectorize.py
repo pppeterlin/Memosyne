@@ -202,6 +202,7 @@ def parse_enrichment(fm: dict) -> dict:
         "emotions":  _parse_list(fm.get("entities.emotions")  or fm.get("emotions")),
         "themes":    _parse_list(fm.get("themes")),
         "period":    str(fm.get("period", "")).strip('"').strip("'"),
+        "chat_category": str(fm.get("chat_category", "")).strip('"').strip("'").lower(),
     }
 
 
@@ -516,6 +517,7 @@ def build_chunks(rel_path: str, fm: dict, body: str) -> list[dict]:
         "summary":   str(fm.get("summary", "") or "")[:300],
         "period":    enr.get("period", ""),
         "locations": ",".join(enr.get("locations", [])),
+        "chat_category": enr.get("chat_category", ""),
     }
     chunks = []
 
@@ -762,6 +764,7 @@ def search_bm25(query: str, top_k: int = 15, doc_type: str = "") -> list[dict]:
             "summary":   meta.get("summary", ""),
             "period":    meta.get("period", ""),
             "locations": meta.get("locations", ""),
+            "chat_category": meta.get("chat_category", ""),
             "snippet":   text[text.find("\n") + 1:][:200] if "\n" in text else text[:200],
         })
         if len(output) >= top_k:
@@ -853,6 +856,7 @@ def search_dense(query: str, top_k: int = 15, doc_type: str = "") -> list[dict]:
             "summary":   meta.get("summary", ""),
             "period":    meta.get("period", ""),
             "locations": meta.get("locations", ""),
+            "chat_category": meta.get("chat_category", ""),
             "snippet":   doc[doc.find("\n") + 1:][:200] if "\n" in doc else doc[:200],
         }
 
@@ -919,6 +923,7 @@ def search_graph(query: str, top_k: int = 15, doc_type: str = "") -> list[dict]:
             "summary":   m.get("summary", ""),
             "period":    m.get("period", ""),
             "locations": m.get("locations", ""),
+            "chat_category": m.get("chat_category", ""),
             "snippet":   "",   # graph search 不提供 snippet
         })
         if len(output) >= top_k:
@@ -1070,6 +1075,13 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
                 results.sort(key=lambda x: x["score"], reverse=True)
         except ImportError:
             pass
+
+    # ── AI 對話分流（Phase 4.4）──
+    # 純 knowledge 型 AI 對話（客觀技術問答）對個人記憶檢索相關性低，溫和降權。
+    for r in results:
+        if r.get("chat_category") == "knowledge":
+            r["score"] = round(r["score"] * 0.85, 4)
+    results.sort(key=lambda x: x["score"], reverse=True)
 
     results = results[:top_k]
 
