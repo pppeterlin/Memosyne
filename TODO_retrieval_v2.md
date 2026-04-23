@@ -167,14 +167,16 @@
 > 客觀事實型 AI 對話（如「海信螢幕排列方式」）和個人興趣弱相關，
 > 在個人記憶檢索中應降權，避免稀釋。
 
-- [ ] ingest.py 對 `20_AI_Chats` 新增 `chat_category` enrichment 欄位：
-  - `personal` — 和使用者個人生活/情緒/決策相關
-  - `knowledge` — 純技術/客觀知識問答
-  - `mixed` — 兼具
-- [ ] LLM 分類：Oracle 入庫時判斷 category（可在 `enrich.py` 加一輪）
-- [ ] Tapestry：對 `chat_category=knowledge` 的記憶邊權重降低
-- [ ] search()：對純 knowledge 類 AI 對話施加軟降權（除非 query 明顯是技術問題）
-- [ ] 回填既有 AI 對話記憶
+- [x] `enrich.py` Oracle 新增 `chat_category` 欄位與 prompt 指令（僅對 `20_AI_Chats/` 啟用）
+- [x] `validate_entities` 做白名單驗證（personal/knowledge/mixed/空）
+- [x] `rewrite_file_with_enrichment` 寫入 frontmatter
+- [x] `vectorize.py`：meta_base 帶入 `chat_category`，三路搜尋結果 dict 保留欄位
+- [x] `search()`：對 `chat_category="knowledge"` 無條件軟降權 ×0.85
+- [x] `backfill_chat_category.py`：輕量級 backfill script（只跑一輪分類、不重算 enrichment）
+- [ ] **[使用者任務]** 跑 backfill：`python3 backfill_chat_category.py --apply`（76 檔，約 2–3 分鐘）
+- [ ] **[使用者任務]** Backfill 完後 `vectorize.py --rebuild` 讓 meta 進索引
+- [ ] **[使用者任務]** Eternal Mirror 對比前後差異
+- [ ] Tapestry 邊權重：`chat_category=knowledge` 邊降權（後續選做）
 
 ---
 
