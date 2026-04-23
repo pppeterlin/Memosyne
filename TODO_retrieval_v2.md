@@ -3,7 +3,7 @@
 > 持久化追蹤檔案。每次 commit 後請更新此檔狀態。
 > 詳細設計與依據：[優化方案_索引與保存管理.md](優化方案_索引與保存管理.md)
 > 分支：`v0.2`（將釋出為 v0.2.0；master 保留為 v0.1.0）
-> 最後更新：2026-04-23（新增 Phase 5 固化評估框架）
+> 最後更新：2026-04-23（Muse Router adaptive boost 成為預設；Phase 5 Eternal Mirror 落地）
 
 ## 狀態圖例
 - [ ] pending
@@ -65,9 +65,17 @@
 ### 2.2 The Invocation（繆思路由器）
 - [x] 建立 `muses.py`：query → 1–3 位繆思的分類器（prototype centroid + cosine）
 - [x] 訓練/準備 9 繆思的 prototype embedding（用各繆思領域現有記憶做 centroid；seed < 3 的繆思略過）
-- [x] 兩種模式：硬篩選（`muse_mode="hard"`）/ 軟加權（`muse_mode="soft"` ×1.3）
+- [x] 兩種模式：硬篩選（`muse_mode="hard"`）/ 軟加權（`muse_mode="soft"`）
 - [x] MCP `search_memory` 接受 `muses=[]` / `auto_route=true` / `muse_mode`
-- [ ] **[使用者任務]** Augury 對比
+- [x] **Confidence-scaled boost（adaptive，v0.2 預設）**：`boost = 1 + (router_score - threshold) × k`，clamp 至 `muse_boost_max`
+  - Eternal Mirror N=500 對比（2026-04-23）：
+    | 指標 | Baseline | Flat ×1.30 | **Adaptive** |
+    |---|---:|---:|---:|
+    | R@1 | 0.036 | 0.104 | **0.108** |
+    | R@5 | 0.102 | 0.148 | **0.150** |
+    | R@10 | **0.248** | 0.172 | 0.174 |
+    | MRR | 0.075 | 0.125 | **0.128** |
+  - 預設參數：`auto_route_threshold=0.20, muse_boost_k=2.0, muse_boost_max=1.5`
 
 ### 2.3 HippoRAG 2（短語+段落共圖）
 - [x] 修改 `tapestry.py`：PPR seed 同時接受 phrase node（entity）與 passage node（memory）
