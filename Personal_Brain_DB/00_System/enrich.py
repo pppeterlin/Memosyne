@@ -167,6 +167,12 @@ THE LAWS OF THE ORACLE（不可違背）:
 7. personal_facts: first-person factual statements about the author's own life that appear in the text.
    These are personal experiences or facts, NOT reference knowledge or objective information.
    Example: "friend-A 住在 Tokyo" = personal fact.   "Tokyo is the capital of Japan" = reference, exclude it.
+   ⚠️ IMPORTANT for AI-chat records: even when the main topic is knowledge/technical,
+   if the user mentions their own possessions / experiences / plans / identifiers,
+   STILL extract those as personal_facts. Examples:
+     - User asks about a product AND reveals they own model "KMN-9503" → extract "我的眼鏡型號是 KMN-9503"
+     - User asks about a city AND mentions they lived there in 2025 → extract "我 2025 住過 X"
+     - User asks for code help AND reveals their stack is X → extract "我用 X"
    Max 5 items. Each must be a concise statement (under 30 chars). Return [] if none.
 8. chat_category: ONLY for AI-chat records (when is_ai_chat=True below). Classify this conversation:
    - "personal"  = about the author's life/emotions/decisions/relationships
