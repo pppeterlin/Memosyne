@@ -969,7 +969,9 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
            muse_penalty_k: float = 0.5,
            muse_penalty_min: float = 0.85,
            route_top_k: int = 2,
-           exclude_views: list[str] | None = None) -> list[dict]:
+           exclude_views: list[str] | None = None,
+           decompose: bool = False,
+           decompose_model: str = "proxy:claude-opus-4-6") -> list[dict]:
     """
     三路 Hybrid search：Dense（ChromaDB）+ BM25 + Tapestry Graph → RRF 融合
     → ACT-R 認知衰減重排 → top_k 結果。
@@ -991,6 +993,52 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
     - 三路都有    → RRF 三路合併 → ACT-R rerank
     """
     FETCH = max(top_k * 3, 15)   # 各路各取多一點，RRF 後再截斷
+
+    # ── Query Decomposition（Phase 4.7）──
+    # 複雜 query 拆成子 query，各走完整 hybrid search，再 RRF 合併最終結果。
+    # 每個子 query 遞迴呼叫 search()（decompose=False 避免無限遞迴）。
+    if decompose:
+        try:
+            from query_decompose import decompose as _decompose, is_complex
+            if is_complex(query):
+                subs = _decompose(query, model=decompose_model)
+                if len(subs) >= 2:
+                    sub_lists = []
+                    for sq in subs:
+                        sub_lists.append(
+                            search(sq, top_k=FETCH, doc_type=doc_type,
+                                   record_access=False, return_parent=False,
+                                   muses=muses, auto_route=auto_route,
+                                   muse_mode=muse_mode, muse_boost=muse_boost,
+                                   auto_route_threshold=auto_route_threshold,
+                                   muse_boost_k=muse_boost_k,
+                                   muse_boost_max=muse_boost_max,
+                                   muse_penalty_k=muse_penalty_k,
+                                   muse_penalty_min=muse_penalty_min,
+                                   route_top_k=route_top_k,
+                                   exclude_views=exclude_views,
+                                   decompose=False)
+                        )
+                    merged = _rrf_merge_multi(sub_lists)
+                    # 後續 ACT-R / access log / parent 展開一致處理
+                    results = merged[:FETCH]
+                    if return_parent:
+                        results = _expand_parent_sections(results)
+                    try:
+                        from mneme_weight import actr_rerank
+                        results = actr_rerank(results)
+                    except ImportError:
+                        pass
+                    results = results[:top_k]
+                    if record_access and results:
+                        try:
+                            from mneme_weight import record_access as _record
+                            _record([r["path"] for r in results], source="search_decomposed")
+                        except ImportError:
+                            pass
+                    return results
+        except ImportError:
+            pass
 
     dense_results = search_dense(query, top_k=FETCH, doc_type=doc_type,
                                  exclude_views=exclude_views)
