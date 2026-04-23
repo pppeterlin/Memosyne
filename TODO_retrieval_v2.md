@@ -3,7 +3,7 @@
 > 持久化追蹤檔案。每次 commit 後請更新此檔狀態。
 > 詳細設計與依據：[優化方案_索引與保存管理.md](優化方案_索引與保存管理.md)
 > 分支：`v0.2`（將釋出為 v0.2.0；master 保留為 v0.1.0）
-> 最後更新：2026-04-22（Phase 3.1/3.2/3.3 工程部分完成）
+> 最後更新：2026-04-23（新增 Phase 5 固化評估框架）
 
 ## 狀態圖例
 - [ ] pending
@@ -110,10 +110,35 @@
 
 ## Phase 4 — 高階（選做）
 
-### 4.1 The Resonance（A-MEM 記憶演化）
-- [ ] Slumber 新增「共鳴儀式」：新記憶觸發重疊 ≥ 2 實體的舊記憶重新 enrichment
-- [ ] 舊 enrichment 保留至 `enrichment_history[]`，版本化
-- [ ] 頻率控制：僅在 Slumber 排程期執行
+### 4.1 The Dreaming（全局記憶鞏固 / REM 循環）
+
+> **設計定位修正（2026-04-23）**：原本的 A-MEM Resonance 是「新記憶觸發舊記憶重 enrichment」，
+> 屬**增量式**；但使用者願景是「像做夢一樣**全局整理**」。
+> 目前 Slumber 的 Reflection 只做近 14 天時間窗口，不動舊記憶，不做聚合——缺的就是這塊。
+
+**四個子儀式：**
+
+#### 4.1.a Aggregation Dream — 跨記憶聚合（解類型 A 問題）
+- [ ] 週期性遍歷全庫，LLM 從散落事實提煉聚合記憶
+  - 例：「去過哪些國家/城市」「人際圈」「價值觀演變」→ 獨立 profile memory
+- [ ] 產出寫入 `10_Profile/aggregates/`（與 reflections 區分）
+- [ ] 附 `source_paths[]` 可追溯來源
+- [ ] 隨新記憶增量更新而非每次重生
+
+#### 4.1.b Repair Dream — 記憶修復
+- [ ] 全庫掃描偵測矛盾 personal_facts / entities
+- [ ] 呼叫 Ordeal 仲裁，必要時觸發 Aletheia 請求人工確認
+- [ ] 錯誤標記 `t_valid_end` 而非刪除
+
+#### 4.1.c Resonance Dream — 共振重 enrichment（原 A-MEM）
+- [ ] 新記憶入庫後，與其重疊 ≥ 2 實體的舊記憶列入候選
+- [ ] 批次重跑 enrichment，舊版本存 `enrichment_history[]`
+- [ ] 頻率控制：Slumber 排程期才執行
+
+#### 4.1.d Consolidation Dream — 結構鞏固
+- [ ] 低密度散布事實 → 高密度結構節點
+- [ ] Tapestry 新增 `episode` 節點（Phase 4.2），由 Dreaming 自動產生
+- [ ] 高頻共現實體對 → 升級為結構化關聯（不僅 co_recalled）
 
 ### 4.2 Episode 節點
 - [ ] Tapestry 新增 `episode` 節點類型
@@ -124,6 +149,92 @@
 - [ ] 複雜 query → LLM 拆成 (時間, 人, 地點, 動作) 子 query
 - [ ] 每個子 query 各走 RRF，最後再 RRF 合併
 - [ ] Augury 對比：多跳題的完整率
+
+### 4.4 AI 對話分流（解類型 B 問題）
+
+> 客觀事實型 AI 對話（如「海信螢幕排列方式」）和個人興趣弱相關，
+> 在個人記憶檢索中應降權，避免稀釋。
+
+- [ ] ingest.py 對 `20_AI_Chats` 新增 `chat_category` enrichment 欄位：
+  - `personal` — 和使用者個人生活/情緒/決策相關
+  - `knowledge` — 純技術/客觀知識問答
+  - `mixed` — 兼具
+- [ ] LLM 分類：Oracle 入庫時判斷 category（可在 `enrich.py` 加一輪）
+- [ ] Tapestry：對 `chat_category=knowledge` 的記憶邊權重降低
+- [ ] search()：對純 knowledge 類 AI 對話施加軟降權（除非 query 明顯是技術問題）
+- [ ] 回填既有 AI 對話記憶
+
+---
+
+## Phase 5 — 固化評估框架（The Eternal Mirror）
+
+> 目的：建立**零人工標註**的可持續評估流程，讓每次優化前後都能自動對比檢索品質。
+> 與 Phase 1.1 Augury（人工 golden_set）並列為兩大評估支柱：
+> - **Augury**：人工挑題，衡量真實使用體驗（品質偏主觀）
+> - **Eternal Mirror**：自監督，衡量檢索機械能力（數字客觀穩定）
+
+### 5.1 HyQE Round-trip 自監督評估
+- [ ] 建立 `Personal_Brain_DB/00_System/benchmark/retrieval_eval.py`
+  - 從 `hyqe_cache.json` 隨機抽 N 題（預設 500）
+  - 每題 query 綁定 source chunk（path + para_idx）
+  - 呼叫 `search()` 跑 top-K
+  - 指標：Recall@1 / Recall@5 / Recall@10 / MRR
+  - 分層報告：依繆思領域 / 依 chunk 長度 / 依問題類型
+- [ ] 支援多組設定 A/B：`--config baseline` vs `--config full`（讀取 YAML profile）
+- [ ] 報告輸出至 `benchmark/reports/eval_YYYYMMDD_HHMM.json` + markdown
+- [ ] 自動 diff 上一份報告（上升/下降標註、顯著性提示）
+- [ ] `--sample-seed` 固定隨機種子，確保可重現
+
+### 5.2 CI/Workflow 整合
+- [ ] `Makefile` 或 shell script：`make eval` 一鍵跑 baseline + full
+- [ ] 每次優化 commit 前後各跑一次，報告附在 commit message
+- [ ] 設定回歸閾值：Recall@5 下降 > 2% 視為回歸，需手動確認
+
+### 5.3 與 Augury 互補
+- [ ] `retrieval_eval.py` 支援讀 `golden_set.yaml` 做混合評估
+- [ ] 統一報告格式：Eternal Mirror（自監督）+ Augury（人工）雙欄對照
+- [ ] Slumber `--stats` 加入最近一次評估摘要
+
+### 5.4 評估數據的衛生
+- [ ] 避免資料洩漏：HyQE 問題已嵌入索引，需剔除「query 命中自己的 hyqe view」這種偽命中
+  - 做法：搜尋結果 metadata 若 view=hyqe 且 source 與 query 同 chunk，視為退化命中（可選懲罰或忽略）
+- [ ] 抽樣策略：依 chunk 長度/繆思分層抽樣，避免長文或熱門繆思壟斷
+
+---
+
+## Phase 6 — Aletheia（對話式記憶更正）
+
+> 神話定位：**Aletheia（Ἀλήθεια）— 真理/揭露女神，Lethe 的反面**。
+> Lethe 令記憶沉沒，Aletheia 使記憶顯真。
+> 與 Ordeal（批次自動仲裁）互補：Aletheia 是**使用者對話式手動介入**的 curation 管道。
+>
+> 目標：不需手動編輯文字檔，透過和 agent 對話就能修復/更正記憶庫。
+
+### 6.1 Aletheia 核心引擎
+- [ ] 建立 `Personal_Brain_DB/00_System/aletheia.py`
+- [ ] 操作類型（沿用並擴展 Ordeal 語意）：
+  - `UPDATE` — 改 YAML 欄位（personal_facts / themes / period / importance）
+  - `INVALIDATE` — 標記錯誤記憶，設 `t_valid_end`
+  - `MERGE` — 合併重複實體（人名別名等，呼叫 Naming Rite）
+  - `ANNOTATE` — 加備註但不改原始文本
+  - `CORRECT_TEXT` — 改正原文錯字/事實錯誤（謹慎使用）
+- [ ] 所有變更寫 `aletheia_log.jsonl`（reversible，含 before/after diff）
+- [ ] 支援 `--revert <log_id>` 還原任一操作
+
+### 6.2 MCP 對話接口
+- [ ] 新增 MCP tool `aletheia_correct(memory_path, instruction, dry_run=True)`
+- [ ] 新增 MCP tool `aletheia_revert(log_id)`
+- [ ] agent 流程：讀記憶 → 呈現現狀 → 用戶口述修正 → dry-run 顯示 diff → 確認後 apply
+- [ ] 預設 dry_run=True，避免誤改
+
+### 6.3 Tapestry 整合
+- [ ] Aletheia 改 personal_facts → 自動同步 Tapestry 邊（新增/invalidate）
+- [ ] MERGE 操作觸發 Naming Rite 的 alias 合併邏輯
+
+### 6.4 安全網
+- [ ] 每次 apply 前自動 git snapshot（或 shadow copy 到 `aletheia_backup/`）
+- [ ] 高風險操作（CORRECT_TEXT / MERGE）需二次確認
+- [ ] Aletheia 操作觸發該記憶 re-embedding（保持索引一致）
 
 ---
 

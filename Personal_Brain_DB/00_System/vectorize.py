@@ -930,7 +930,9 @@ def search_graph(query: str, top_k: int = 15, doc_type: str = "") -> list[dict]:
 def search(query: str, top_k: int = 5, doc_type: str = "",
            record_access: bool = True, return_parent: bool = False,
            muses: list[str] | None = None, auto_route: bool = False,
-           muse_mode: str = "soft") -> list[dict]:
+           muse_mode: str = "soft",
+           muse_boost: float = 1.3,
+           auto_route_threshold: float = 0.20) -> list[dict]:
     """
     三路 Hybrid search：Dense（ChromaDB）+ BM25 + Tapestry Graph → RRF 融合
     → ACT-R 認知衰減重排 → top_k 結果。
@@ -1016,7 +1018,7 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
     if auto_route and not active_muses:
         try:
             from muses import route as _muse_route
-            routed = _muse_route(query, top_k=2, threshold=0.20)
+            routed = _muse_route(query, top_k=2, threshold=auto_route_threshold)
             active_muses = [m for m, _ in routed]
         except Exception:
             active_muses = []
@@ -1028,7 +1030,7 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
             else:
                 for r in results:
                     r["score"] = round(
-                        r["score"] * muse_boost_factor(r, active_muses), 4
+                        r["score"] * muse_boost_factor(r, active_muses, boost=muse_boost), 4
                     )
                 results.sort(key=lambda x: x["score"], reverse=True)
         except ImportError:
