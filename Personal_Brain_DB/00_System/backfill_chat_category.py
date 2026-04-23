@@ -93,7 +93,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true", help="實際寫入（預設 dry-run）")
     ap.add_argument("--limit", type=int, default=0, help="只處理前 N 個")
-    ap.add_argument("--model", default="proxy:claude-haiku-4-5", help="LLM 模型")
+    ap.add_argument("--model", default="proxy:claude-opus-4-6", help="LLM 模型")
     ap.add_argument("--force", action="store_true", help="覆蓋已有 chat_category")
     args = ap.parse_args()
 
