@@ -60,9 +60,11 @@ def muse_of(path: str) -> str:
 CONFIGS = {
     # No muse routing — 純 hybrid RRF（參考基準）
     "baseline": dict(auto_route=False, muse_mode="soft", return_parent=False, muse_boost_k=0.0),
-    # 當前預設：auto_route + confidence-scaled boost（adaptive）
-    #   boost = 1 + (router_score - threshold) × k, clamped to max
-    "full":     dict(auto_route=True,  muse_mode="soft", return_parent=True,
+    # 當前預設：auto_route + soft penalty（非命中按 router 信心扣 up to 15%）
+    "full":     dict(auto_route=True,  muse_mode="penalty", return_parent=True,
+                     auto_route_threshold=0.20, muse_penalty_k=0.5, muse_penalty_min=0.85),
+    # 歷史對照：confidence-scaled boost（v0.2-rc1 舊行為）
+    "boost":    dict(auto_route=True,  muse_mode="soft", return_parent=True,
                      auto_route_threshold=0.20, muse_boost_k=2.0, muse_boost_max=1.5),
     # 歷史對照：flat boost（v0.1 舊行為）
     "flat":     dict(auto_route=True,  muse_mode="soft", return_parent=True,
