@@ -45,6 +45,85 @@ sys.path.insert(0, str(SYSTEM_DIR))
 ALETHEIA_LOG = SYSTEM_DIR / "aletheia_log.jsonl"
 
 
+# ── Tapestry sync (Phase 6.3) ─────────────────────────────
+def _extract_enrichment(fm_block: str) -> dict:
+    """從 frontmatter 抽 enrichment 欄位（entities / personal_facts / period）。
+    容忍缺失 PyYAML，退回空 enrichment。"""
+    try:
+        import yaml
+        data = yaml.safe_load(fm_block) or {}
+        return {
+            "entities": data.get("entities", {}) or {},
+            "personal_facts": data.get("personal_facts", []) or [],
+            "period": data.get("period", "") or "",
+        }
+    except Exception:
+        return {"entities": {}, "personal_facts": [], "period": ""}
+
+
+def _memory_path_for_tapestry(path: str, full: Path) -> str:
+    """Tapestry 用的 path key：相對於 vault 根，剝掉 _vault/ 前綴。"""
+    try:
+        rel = str(full.relative_to(BASE))
+    except ValueError:
+        rel = path
+    if rel.startswith("_vault/"):
+        rel = rel[len("_vault/"):]
+    return rel
+
+
+def _sync_tapestry(entry: dict, full: Path, new_content: str) -> dict:
+    """將 Aletheia 操作同步至 Tapestry。
+    - ADD_FACT / UPDATE_FACT / CORRECT_TEXT → 重新 weave（MERGE 冪等）
+    - INVALIDATE_FACT → invalidate evidence 匹配的 person_loc 邊
+    失敗不阻斷主操作，回傳 sync_status。"""
+    op = entry["op"]
+    path = entry["path"]
+    status: dict = {"synced": False, "detail": ""}
+    try:
+        import tapestry as T
+        from datetime import datetime as _dt
+        conn = T.get_conn()
+        mp = _memory_path_for_tapestry(path, full)
+        ts = _dt.now()
+
+        if op in ("ADD_FACT", "UPDATE_FACT", "CORRECT_TEXT"):
+            fm_block, _ = _split_fm(new_content)
+            if fm_block is None:
+                status["detail"] = "no_frontmatter"
+                return status
+            enr = _extract_enrichment(fm_block)
+            T.weave_memory(conn, mp, enr, now=ts)
+            status.update(synced=True, detail=f"rewove memory={mp}")
+
+        elif op == "INVALIDATE_FACT":
+            # 找 evidence 與 removed fact 的前 80 字元重疊的 person_loc 邊
+            removed = entry.get("removed", "")
+            ev_prefix = removed[:80]
+            rows = conn.execute(
+                "MATCH (p:Person)-[e:person_loc]->(l:Location) "
+                "WHERE e.evidence = $ev AND e.t_valid_end IS NULL "
+                "RETURN p.name AS pn, l.name AS ln",
+                {"ev": ev_prefix},
+            )
+            invalidated = 0
+            while rows.has_next():
+                r = rows.get_next()
+                pn, ln = r[0], r[1]
+                T.invalidate_edge(
+                    conn, "person_loc", "Person", pn, "Location", ln,
+                    invalidated_by=f"aletheia:{entry.get('id', '?')}", when=ts,
+                )
+                invalidated += 1
+            status.update(synced=True, detail=f"invalidated {invalidated} person_loc edges")
+
+        elif op == "REVERT":
+            status["detail"] = "revert_delegates_to_inverse_op"
+    except Exception as e:
+        status["detail"] = f"sync_failed: {type(e).__name__}: {e}"
+    return status
+
+
 # ── Frontmatter utilities ─────────────────────────────────
 def _split_fm(content: str) -> tuple[str | None, str]:
     """回傳 (fm_block_without_delim, body_from_'---\\n' after fm)。
@@ -172,7 +251,7 @@ def _show_diff(before: str, after: str, path: str) -> None:
     sys.stdout.writelines(diff)
 
 
-def add_fact(path: str, fact: str, apply: bool = False) -> dict:
+def add_fact(path: str, fact: str, apply: bool = False, sync: bool = True) -> dict:
     full = _resolve_path(path)
     content = full.read_text(encoding="utf-8")
     fm, body = _split_fm(content)
@@ -190,13 +269,16 @@ def add_fact(path: str, fact: str, apply: bool = False) -> dict:
     if apply:
         full.write_text(new_content, encoding="utf-8")
         entry["id"] = _log(entry)
+        if sync:
+            entry["sync"] = _sync_tapestry(entry, full, new_content)
+            print(f"🕸  tapestry: {entry['sync']['detail']}")
         print(f"\n✅ Applied (log_id={entry['id']})")
     else:
         print("\n⚠️  dry-run; 加 --apply 才實際寫入")
     return entry
 
 
-def update_fact(path: str, old: str, new: str, apply: bool = False) -> dict:
+def update_fact(path: str, old: str, new: str, apply: bool = False, sync: bool = True) -> dict:
     full = _resolve_path(path)
     content = full.read_text(encoding="utf-8")
     fm, body = _split_fm(content)
@@ -220,13 +302,22 @@ def update_fact(path: str, old: str, new: str, apply: bool = False) -> dict:
     if apply:
         full.write_text(new_content, encoding="utf-8")
         entry["id"] = _log(entry)
+        if sync:
+            # 先 invalidate 舊 evidence 的 person_loc 邊，再 re-weave 新 fact
+            inv_entry = {"op": "INVALIDATE_FACT", "path": path, "removed": old_fact,
+                         "id": entry["id"]}
+            _sync_tapestry(inv_entry, full, new_content)
+            entry["sync"] = _sync_tapestry(
+                {"op": "ADD_FACT", "path": path, "id": entry["id"]}, full, new_content,
+            )
+            print(f"🕸  tapestry: {entry['sync']['detail']}")
         print(f"\n✅ Applied (log_id={entry['id']})")
     else:
         print("\n⚠️  dry-run")
     return entry
 
 
-def invalidate_fact(path: str, match: str, apply: bool = False) -> dict:
+def invalidate_fact(path: str, match: str, apply: bool = False, sync: bool = True) -> dict:
     full = _resolve_path(path)
     content = full.read_text(encoding="utf-8")
     fm, body = _split_fm(content)
@@ -249,13 +340,16 @@ def invalidate_fact(path: str, match: str, apply: bool = False) -> dict:
     if apply:
         full.write_text(new_content, encoding="utf-8")
         entry["id"] = _log(entry)
+        if sync:
+            entry["sync"] = _sync_tapestry(entry, full, new_content)
+            print(f"🕸  tapestry: {entry['sync']['detail']}")
         print(f"\n✅ Applied (log_id={entry['id']})")
     else:
         print("\n⚠️  dry-run")
     return entry
 
 
-def correct_text(path: str, old: str, new: str, apply: bool = False) -> dict:
+def correct_text(path: str, old: str, new: str, apply: bool = False, sync: bool = True) -> dict:
     """Body 內 literal substring 替換。old 必須唯一出現以避免誤傷。"""
     full = _resolve_path(path)
     content = full.read_text(encoding="utf-8")
@@ -272,26 +366,30 @@ def correct_text(path: str, old: str, new: str, apply: bool = False) -> dict:
     if apply:
         full.write_text(new_content, encoding="utf-8")
         entry["id"] = _log(entry)
+        if sync:
+            # body 動了，entity set 不變的機率高，但仍 re-weave 以防萬一
+            entry["sync"] = _sync_tapestry(entry, full, new_content)
+            print(f"🕸  tapestry: {entry['sync']['detail']}")
         print(f"\n✅ Applied (log_id={entry['id']})")
     else:
         print("\n⚠️  dry-run")
     return entry
 
 
-def revert(log_id: str, apply: bool = False) -> dict:
+def revert(log_id: str, apply: bool = False, sync: bool = True) -> dict:
     entry = _find_log(log_id)
     if not entry:
         raise ValueError(f"找不到 log id：{log_id}")
     op = entry["op"]
     path = entry["path"]
     if op == "ADD_FACT":
-        return invalidate_fact(path, entry["added"], apply=apply)
+        return invalidate_fact(path, entry["added"], apply=apply, sync=sync)
     if op == "INVALIDATE_FACT":
-        return add_fact(path, entry["removed"], apply=apply)
+        return add_fact(path, entry["removed"], apply=apply, sync=sync)
     if op == "UPDATE_FACT":
-        return update_fact(path, entry["after"], entry["before"], apply=apply)
+        return update_fact(path, entry["after"], entry["before"], apply=apply, sync=sync)
     if op == "CORRECT_TEXT":
-        return correct_text(path, entry["new"], entry["old"], apply=apply)
+        return correct_text(path, entry["new"], entry["old"], apply=apply, sync=sync)
     raise ValueError(f"不支援的 revert 操作：{op}")
 
 
@@ -323,7 +421,10 @@ def main() -> None:
     ap.add_argument("--new", type=str, default="")
     ap.add_argument("--match", type=str, default="", help="INVALIDATE 用")
     ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--no-sync", action="store_true",
+                    help="跳過 Tapestry 同步（預設會同步）")
     args = ap.parse_args()
+    sync = not args.no_sync
 
     try:
         if args.show:
@@ -331,21 +432,21 @@ def main() -> None:
         elif args.add:
             if not args.fact:
                 ap.error("--add 需搭配 --fact")
-            add_fact(args.add, args.fact, apply=args.apply)
+            add_fact(args.add, args.fact, apply=args.apply, sync=sync)
         elif args.update:
             if not (args.old and args.new):
                 ap.error("--update 需搭配 --old 和 --new")
-            update_fact(args.update, args.old, args.new, apply=args.apply)
+            update_fact(args.update, args.old, args.new, apply=args.apply, sync=sync)
         elif args.invalidate:
             if not args.match:
                 ap.error("--invalidate 需搭配 --match")
-            invalidate_fact(args.invalidate, args.match, apply=args.apply)
+            invalidate_fact(args.invalidate, args.match, apply=args.apply, sync=sync)
         elif args.correct:
             if not (args.old and args.new):
                 ap.error("--correct 需搭配 --old 和 --new")
-            correct_text(args.correct, args.old, args.new, apply=args.apply)
+            correct_text(args.correct, args.old, args.new, apply=args.apply, sync=sync)
         elif args.revert:
-            revert(args.revert, apply=args.apply)
+            revert(args.revert, apply=args.apply, sync=sync)
         else:
             ap.print_help()
     except (ValueError, FileNotFoundError) as e:

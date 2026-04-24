@@ -256,6 +256,46 @@
 
 ---
 
+## Phase 7 — The Invocation Protocol（Agent ↔ Memory 系統化介接）
+
+> **動機**：目前 agent 如何呼叫 memory DB，是靠使用者在 chat 裡即興說「去查一下 X」或
+> 臨時改 prompt。這種 ad-hoc 模式無法規模化，每次遇到新情境就得重寫 prompt。
+> 應該把「何時搜、搜什麼、怎麼融合結果、何時寫、何時更正」做成**系統化協議**，
+> 以 Skill + MCP tool 的組合正規化。
+>
+> 神話定位：**The Invocation**（召喚儀式）——不是亂叫女神，是依循儀軌呼喚正確的 Muse。
+
+### 7.1 行為分類與觸發條件
+- [ ] 盤點 agent 會和 memory DB 互動的所有場景：
+  - **READ-RECALL**：使用者問過往的事（「我上次去東京是什麼時候？」）
+  - **READ-CONTEXT**：agent 主動想用上下文補強回答（不一定被明示）
+  - **READ-TEMPORAL**：「as of 某時間點」的時序查詢
+  - **WRITE-INGEST**：新記憶進 Spring 走常規 ritual
+  - **WRITE-CORRECT**：使用者發現錯誤要更正（→ Aletheia）
+  - **WRITE-ANNOTATE**：加註記但不改原文
+- [ ] 每一類給出觸發啟發式（何時 agent 應該主動呼叫 MCP）
+
+### 7.2 Skill 設計（`memosyne-invocation`）
+- [ ] 建立 `~/.claude/skills/memosyne-invocation/SKILL.md`
+- [ ] 內含決策樹：query → 分類 → 對應 MCP tool
+- [ ] 列出「應呼叫 memory」vs「不該呼叫」的範例對照
+- [ ] Query hygiene：剝離日常寒暄／純推理題／公共知識（不該進記憶庫）
+- [ ] 後處理守則：如何把檢索結果融進回答、何時顯示引用、何時保留沉默
+
+### 7.3 MCP 介面整理
+- [ ] 現有 tools 盤點：`query_memory` / `query_memory_at_time` / `get_entity_timeline` /
+  `aletheia_*`（5 個）
+- [ ] 介面一致化：統一回傳 schema、統一 dry-run 慣例、統一錯誤格式
+- [ ] 新增 meta-tool `memosyne_guide`：agent 若不確定用哪個 tool，先問它
+- [ ] 文件自動產生：每個 tool 產 1-shot example，放進 Skill
+
+### 7.4 評估
+- [ ] 建立「agent-in-the-loop」測試集：一組真實對話，檢驗 agent 是否在正確時機呼叫正確 tool
+- [ ] 指標：召回命中率、誤觸發率、使用者干預次數
+- [ ] Skill 調整前後對比
+
+---
+
 ## 不做（避免過度工程）
 - ❌ ColBERT 晚期互動（除非 Augury 證明 dense 是瓶頸）
 - ❌ MemGPT-style 分頁（Claude context window 夠）
