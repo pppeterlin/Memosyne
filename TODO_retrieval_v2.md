@@ -130,12 +130,16 @@
 
 **四個子儀式：**
 
-#### 4.1.a Aggregation Dream — 跨記憶聚合（解類型 A 問題）
-- [ ] 週期性遍歷全庫，LLM 從散落事實提煉聚合記憶
-  - 例：「去過哪些國家/城市」「人際圈」「價值觀演變」→ 獨立 profile memory
-- [ ] 產出寫入 `10_Profile/aggregates/`（與 reflections 區分）
-- [ ] 附 `source_paths[]` 可追溯來源
-- [ ] 隨新記憶增量更新而非每次重生
+#### 4.1.a Aggregation Dream — 跨記憶聚合 → **已實作（commit 待填）**
+- [x] `slumber.py --aggregate` 儀式
+- [x] `_collect_all_personal_facts()` 遍歷全庫（容錯 flow / block YAML）
+- [x] LLM 依 7 個固定主題 slug 聚合（places / people / possessions /
+  habits / values / career / interests）
+- [x] 產出寫入 `10_Profile/aggregates/<slug>.md`（與 reflections 區分）
+- [x] frontmatter 附 `source_paths[]`；文末列事實原文可追溯
+- [x] 僅 `--aggregate` 或 `--all` 才觸發（LLM-heavy，不併入預設儀式）
+- [ ] 增量更新（目前每次全量重生）—— 延後
+- [ ] **[使用者任務]** backfill personal_facts 後再跑 `--aggregate`
 
 #### 4.1.b Repair Dream — 記憶修復
 - [ ] 全庫掃描偵測矛盾 personal_facts / entities

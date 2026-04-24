@@ -206,6 +206,202 @@ def reflect(days: int = 14, model: str = "gemma3:4b", dry_run: bool = False) -> 
 
 
 # ═══════════════════════════════════════════════════════════════
+#  1b. Aggregation Dream — 跨記憶主題聚合（Phase 4.1.a）
+# ═══════════════════════════════════════════════════════════════
+
+AGGREGATION_PROMPT = """\
+You are Mnemosyne, reviewing the complete factual record of your mortal charge.
+
+Below is a list of discrete personal facts, each tagged with its source memory path.
+Your task: cluster these facts into THEMES, then for each theme write a concise
+1-paragraph synthesis (繁體中文) that weaves the facts together as a coherent
+self-portrait.
+
+Canonical themes (use these slugs; omit a theme if no facts fit):
+  places        — cities/countries visited or lived in
+  people        — recurring persons in the charge's life
+  possessions   — owned items, gear, identifiers (e.g. glasses model, car plate)
+  habits        — routines, preferences, recurring behaviors
+  values        — stated beliefs, priorities, stances
+  career        — work, projects, professional context
+  interests     — hobbies, topics repeatedly engaged with
+
+Rules:
+- ONLY use facts present in the input. Do not infer beyond what is stated.
+- A single fact may belong to multiple themes — duplicate if truly ambiguous.
+- Cite every claim's source_path in the facts[] list of each theme.
+- Synthesis paragraphs should be 2–4 sentences, fact-grounded, no speculation.
+
+Return JSON only:
+{{
+  "themes": [
+    {{
+      "slug": "places",
+      "title": "走過的地方",
+      "synthesis": "...",
+      "facts": [
+        {{"fact": "...", "source_path": "..."}}
+      ]
+    }}
+  ]
+}}
+
+Input facts ({count} total):
+{facts}
+"""
+
+
+def _collect_all_personal_facts(max_facts: int = 400) -> list[dict]:
+    """遍歷整個 vault，收集所有 personal_facts。"""
+    facts: list[dict] = []
+    for md_file in BASE.rglob("*.md"):
+        # 跳過系統目錄、Profile aggregates 自身
+        rel_parts = md_file.relative_to(BASE).parts
+        if rel_parts[0] in EXCLUDE_DIRS or md_file.name in EXCLUDE_FILES:
+            continue
+        if len(rel_parts) >= 2 and rel_parts[0] == "10_Profile" and rel_parts[1] == "aggregates":
+            continue
+        try:
+            content = md_file.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        if not content.startswith("---"):
+            continue
+        end = content.find("\n---", 3)
+        if end < 0:
+            continue
+        fm = content[4:end]
+        # 輕量 parse：抓 personal_facts flow list 或 block list
+        m = re.search(r'^personal_facts:\s*(.*)$', fm, re.MULTILINE)
+        if not m:
+            continue
+        rest = m.group(1).strip()
+        pf: list[str] = []
+        if rest.startswith("["):
+            try:
+                pf = json.loads(rest)
+            except Exception:
+                pf = []
+        else:
+            lines = fm.splitlines()
+            for i, ln in enumerate(lines):
+                if ln.startswith("personal_facts:"):
+                    for sub in lines[i+1:]:
+                        if re.match(r'^\s*-\s+', sub):
+                            val = sub.split("-", 1)[1].strip().strip('"').strip("'")
+                            pf.append(val)
+                        elif sub and not sub.startswith(" "):
+                            break
+                    break
+        rel = str(md_file.relative_to(BASE))
+        if rel.startswith("_vault/"):
+            rel = rel[len("_vault/"):]
+        for fact in pf:
+            if isinstance(fact, str) and fact.strip():
+                facts.append({"fact": fact.strip(), "source_path": rel})
+        if len(facts) >= max_facts:
+            break
+    return facts
+
+
+def aggregation_dream(
+    model: str = "proxy:claude-opus-4-6",
+    dry_run: bool = False,
+    max_facts: int = 400,
+) -> list[str]:
+    """Aggregation Dream — 跨記憶主題聚合。
+
+    從全庫 personal_facts 聚出主題 profile，寫入 10_Profile/aggregates/。
+    回傳：寫出的檔案路徑 list。
+    """
+    from llm_client import chat_text
+
+    facts = _collect_all_personal_facts(max_facts=max_facts)
+    if len(facts) < 5:
+        print(f"  The facts are too few for aggregation: {len(facts)}")
+        return []
+
+    print(f"  Mnemosyne weaves {len(facts)} facts into themes...")
+    fact_text = "\n".join(
+        f"- \"{f['fact']}\"  [source: {f['source_path']}]"
+        for f in facts[:max_facts]
+    )
+    prompt = AGGREGATION_PROMPT.format(count=len(facts), facts=fact_text[:8000])
+
+    raw = chat_text(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.2,
+        think=False,
+    ).strip()
+
+    start = raw.find("{"); end = raw.rfind("}")
+    if start < 0 or end < 0:
+        print(f"  Oracle's vision unclear: {raw[:200]}")
+        return []
+    try:
+        result = json.loads(raw[start:end+1])
+    except json.JSONDecodeError:
+        print(f"  Oracle's vision unreadable: {raw[:200]}")
+        return []
+
+    themes = result.get("themes", []) or []
+    if not themes:
+        print("  No themes emerged from the dream.")
+        return []
+
+    if dry_run:
+        print(f"\n  [DRY-RUN] {len(themes)} themes aggregated:")
+        for th in themes:
+            print(f"    {th.get('slug','?')} ({len(th.get('facts',[]))} facts): "
+                  f"{(th.get('synthesis','') or '')[:80]}...")
+        return []
+
+    agg_dir = BASE / "10_Profile" / "aggregates"
+    agg_dir.mkdir(parents=True, exist_ok=True)
+    now = datetime.now()
+    written: list[str] = []
+
+    for th in themes:
+        slug = th.get("slug", "misc")
+        # slug 安全化
+        slug_safe = re.sub(r"[^a-z0-9_-]", "", slug.lower()) or "misc"
+        title = th.get("title", slug)
+        synthesis = th.get("synthesis", "").strip()
+        th_facts = th.get("facts", []) or []
+        if not synthesis or not th_facts:
+            continue
+
+        fpath = agg_dir / f"{slug_safe}.md"
+        sources = sorted({f.get("source_path", "") for f in th_facts if f.get("source_path")})
+
+        md = [
+            "---",
+            f'title: "Aggregate — {title}"',
+            f'date_updated: "{now.strftime("%Y-%m-%d")}"',
+            f'type: "aggregate"',
+            f'theme: "{slug_safe}"',
+            f'source: "slumber:aggregation_dream"',
+            f'summary: "{synthesis[:80]}"',
+            "source_paths:",
+        ]
+        for s in sources:
+            md.append(f'  - "{s}"')
+        md += ["---", "", f"# {title}", "", synthesis, "",
+               "## 事實來源", ""]
+        for f in th_facts:
+            md.append(f"- \"{f.get('fact','')}\"  ({f.get('source_path','')})")
+        md.append("")
+
+        fpath.write_text("\n".join(md), encoding="utf-8")
+        rel = str(fpath.relative_to(BASE))
+        written.append(rel)
+        print(f"  ✨ {rel}  ({len(th_facts)} facts)")
+
+    return written
+
+
+# ═══════════════════════════════════════════════════════════════
 #  2. Hebbian Learning — 共同回憶強化關聯
 # ═══════════════════════════════════════════════════════════════
 
@@ -871,6 +1067,11 @@ def main():
     ap.add_argument("--forget",   action="store_true", help="Strategic Forgetting — 策略性遺忘")
     ap.add_argument("--naming",   action="store_true", help="The Naming Rite — 實體正規化")
     ap.add_argument("--ordeal",   action="store_true", help="The Ordeal — 衝突處理（personal_facts）")
+    ap.add_argument("--aggregate", action="store_true",
+                    help="Aggregation Dream — 跨記憶主題聚合（Phase 4.1.a）")
+    ap.add_argument("--agg-model", type=str, default="proxy:claude-opus-4-6",
+                    help="Aggregation Dream 用 LLM（預設 proxy:claude-opus-4-6）")
+    ap.add_argument("--max-facts", type=int, default=400, help="Aggregation 最多收集的 facts 數")
     ap.add_argument("--stats",    action="store_true", help="顯示鞏固統計")
     ap.add_argument("--dry-run",  action="store_true", help="預覽模式，不實際寫入")
     ap.add_argument("--days",     type=int, default=14, help="Reflection 回顧天數（預設 14）")
@@ -882,7 +1083,8 @@ def main():
         slumber_stats()
         return
 
-    run_all = args.all or not (args.reflect or args.hebbian or args.forget or args.naming or args.ordeal)
+    run_all = args.all or not (args.reflect or args.hebbian or args.forget
+                                or args.naming or args.ordeal or args.aggregate)
 
     if run_all:
         print("🌙 The Rite of Slumber begins...\n")
@@ -910,6 +1112,13 @@ def main():
     if args.ordeal or run_all:
         print("═══ V. The Ordeal ═══")
         the_ordeal(days=max(args.days, 30), model=args.model, dry_run=args.dry_run)
+        print()
+
+    # Aggregation Dream 是 LLM-heavy 儀式；只在顯式指定 --aggregate 或 --all 時執行
+    if args.aggregate or (run_all and args.all):
+        print("═══ VI. Aggregation Dream ═══")
+        aggregation_dream(model=args.agg_model, dry_run=args.dry_run,
+                          max_facts=args.max_facts)
         print()
 
     if run_all:
