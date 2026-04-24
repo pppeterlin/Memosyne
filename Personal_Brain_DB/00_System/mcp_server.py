@@ -470,5 +470,110 @@ def aletheia_revert(log_id: str, apply: bool = False) -> str:
         return f"Aletheia faltered: {e}"
 
 
+# ═══════════════════════════════════════════════════════════
+#  The Invocation Protocol — meta-tool for routing (Phase 7)
+# ═══════════════════════════════════════════════════════════
+
+# 分類規則 — 關鍵字 → invocation class → 建議 tool + 範例
+_INVOCATION_RULES: list[dict] = [
+    # READ-TEMPORAL 要放前面，因為時間詞常伴隨 READ-RECALL 短語
+    {
+        "cls": "READ-TEMPORAL",
+        "patterns": [
+            "as of", "before the", "during the", "in 20",
+            "那段時期", "那年", "那時", "時間軸", "歷年",
+            # 年份 + 年
+            r"\b(19|20)\d{2}",
+        ],
+        "tool": "query_memory_at_time  或  get_entity_timeline",
+        "example": 'query_memory_at_time(query="Tokyo trip", timestamp="2023-06")',
+        "notes": "時間點查詢用前者；實體完整軌跡用後者。timestamp 要 ISO 格式。",
+    },
+    {
+        "cls": "WRITE-CORRECT",
+        "patterns": [
+            "記錯了", "應該是", "改成", "取消那個", "wrong", "correct me",
+            "remove that fact", "that's not right", "打錯了",
+        ],
+        "tool": "aletheia_add_fact / update / invalidate / correct_text / revert",
+        "example": 'aletheia_update_fact(path=..., old="2024", new="2025", apply=False)',
+        "notes": "先 dry-run (apply=False) 看 diff，確認後才 apply=True。",
+    },
+    {
+        "cls": "WRITE-INGEST",
+        "patterns": ["記一下", "log this", "幫我存", "save this memory"],
+        "tool": "（無 MCP 直接介面）",
+        "example": "請使用者丟檔案到 spring/ 並跑 python3 00_System/ingest.py",
+        "notes": "入庫需要 Oracle enrichment + chunking + 向量化，不是單一 call。",
+    },
+    {
+        "cls": "READ-RECALL",
+        "patterns": [
+            "我上次", "我之前", "還記得", "什麼時候",
+            "when did i", "what did i say", "remind me",
+            "last time", "who did i", "我有沒有",
+        ],
+        "tool": "search_memory",
+        "example": 'search_memory(query="東京 friend-A", top_k=5, auto_route=True)',
+        "notes": "top_k 預設 5；結果稀疏時加 return_parent=True 取完整段落。",
+    },
+]
+
+
+@mcp.tool()
+def memosyne_guide(situation: str) -> str:
+    """
+    The Invocation Protocol — 當你（agent）不確定該用哪個 memory tool 時呼叫此工具。
+    輸入自然語言描述的情境，回傳建議的 invocation class、對應 tool、範例呼叫與注意事項。
+
+    這是 fallback / 教學工具，不應每輪都呼叫；正常流程請依循 memosyne-invocation skill
+    的決策樹。
+
+    Args:
+        situation: 使用者剛剛說了什麼、或你想做什麼的自然語言描述
+    """
+    import re
+    s = situation.lower()
+
+    matched: list[dict] = []
+    for rule in _INVOCATION_RULES:
+        for pat in rule["patterns"]:
+            # 簡單支援 regex 與 literal
+            if pat.startswith(("\\b", "\\d", "(")) or any(ch in pat for ch in "^$[]"):
+                if re.search(pat, s):
+                    matched.append(rule); break
+            elif pat.lower() in s:
+                matched.append(rule); break
+
+    if not matched:
+        return (
+            "無明確匹配 — 若使用者沒有問過去 / 沒提到個人實體 / 只是一般知識或閒聊，"
+            "請**不要**呼叫 memory。若仍覺得應該查，預設 READ-CONTEXT："
+            "`search_memory(query=<核心名詞>, top_k=3, auto_route=True)`，結果不顯眼使用。"
+        )
+
+    # 去重保序
+    seen, out = set(), []
+    for r in matched:
+        if r["cls"] not in seen:
+            out.append(r); seen.add(r["cls"])
+
+    lines = [f"Invocation Protocol — {len(out)} 個可能類別：\n"]
+    for r in out:
+        lines.append(
+            f"▸ **{r['cls']}**\n"
+            f"   工具：{r['tool']}\n"
+            f"   範例：{r['example']}\n"
+            f"   備註：{r['notes']}\n"
+        )
+    lines.append(
+        "\n通用守則：\n"
+        "• 所有 Aletheia 操作預設 apply=False（dry-run）\n"
+        "• 檢索結果請 interpret 而非 dump；top_k 越小越專注\n"
+        "• 詳見 skill：Personal_Brain_DB/00_System/skills/memosyne-invocation/SKILL.md"
+    )
+    return "\n".join(lines)
+
+
 if __name__ == "__main__":
     mcp.run()

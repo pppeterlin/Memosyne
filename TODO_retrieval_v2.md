@@ -271,29 +271,27 @@
 >
 > 神話定位：**The Invocation**（召喚儀式）——不是亂叫女神，是依循儀軌呼喚正確的 Muse。
 
-### 7.1 行為分類與觸發條件
-- [ ] 盤點 agent 會和 memory DB 互動的所有場景：
-  - **READ-RECALL**：使用者問過往的事（「我上次去東京是什麼時候？」）
-  - **READ-CONTEXT**：agent 主動想用上下文補強回答（不一定被明示）
-  - **READ-TEMPORAL**：「as of 某時間點」的時序查詢
-  - **WRITE-INGEST**：新記憶進 Spring 走常規 ritual
-  - **WRITE-CORRECT**：使用者發現錯誤要更正（→ Aletheia）
-  - **WRITE-ANNOTATE**：加註記但不改原文
-- [ ] 每一類給出觸發啟發式（何時 agent 應該主動呼叫 MCP）
+### 7.1 行為分類與觸發條件 → **已實作（commit 待填）**
+- [x] 盤點 6 個 invocation classes：READ-RECALL / READ-CONTEXT /
+  READ-TEMPORAL / WRITE-INGEST / WRITE-CORRECT / WRITE-ANNOTATE
+- [x] 每一類給出觸發啟發式（zh + en 關鍵詞清單）
 
-### 7.2 Skill 設計（`memosyne-invocation`）
-- [ ] 建立 `~/.claude/skills/memosyne-invocation/SKILL.md`
-- [ ] 內含決策樹：query → 分類 → 對應 MCP tool
-- [ ] 列出「應呼叫 memory」vs「不該呼叫」的範例對照
-- [ ] Query hygiene：剝離日常寒暄／純推理題／公共知識（不該進記憶庫）
-- [ ] 後處理守則：如何把檢索結果融進回答、何時顯示引用、何時保留沉默
+### 7.2 Skill 設計（`memosyne-invocation`）→ **已實作（commit 待填）**
+- [x] 建立 `Personal_Brain_DB/00_System/skills/memosyne-invocation/SKILL.md`
+- [x] 完整決策樹：query → 分類 → 對應 MCP tool
+- [x] 「應呼叫」vs「不該呼叫」對照範例 + 反模式列舉
+- [x] Query hygiene（剝離禮貌 / 元框架 / 保留專有名詞）
+- [x] 後處理守則（interpret 而非 dump、引用格式、空結果誠實）
+- [x] 安全守則（apply=False 預設、snapshot、revert log_id）
+- [ ] **[使用者任務]** 若需全域啟用：symlink 到 `~/.cursor/skills-cursor/`
+  或 `~/.claude/skills/`
 
-### 7.3 MCP 介面整理
-- [ ] 現有 tools 盤點：`query_memory` / `query_memory_at_time` / `get_entity_timeline` /
-  `aletheia_*`（5 個）
-- [ ] 介面一致化：統一回傳 schema、統一 dry-run 慣例、統一錯誤格式
-- [ ] 新增 meta-tool `memosyne_guide`：agent 若不確定用哪個 tool，先問它
-- [ ] 文件自動產生：每個 tool 產 1-shot example，放進 Skill
+### 7.3 MCP 介面整理 → **已實作（commit 待填）**
+- [x] 新增 meta-tool `memosyne_guide(situation)`：輸入自然語言情境，
+  回傳建議 invocation class + tool + 範例 + 注意事項
+- [x] 現有 tools 在 SKILL.md Appendix A 完整盤點
+- [ ] 介面一致化（統一回傳 schema / dry-run / 錯誤格式）—— 延後
+- [ ] 文件自動產生 —— 延後
 
 ### 7.4 評估
 - [ ] 建立「agent-in-the-loop」測試集：一組真實對話，檢驗 agent 是否在正確時機呼叫正確 tool
