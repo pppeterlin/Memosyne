@@ -43,6 +43,57 @@ BASE = SYSTEM_DIR.parent
 sys.path.insert(0, str(SYSTEM_DIR))
 
 ALETHEIA_LOG = SYSTEM_DIR / "aletheia_log.jsonl"
+ALETHEIA_BACKUP_DIR = SYSTEM_DIR / "aletheia_backup"
+PENDING_REEMBED = SYSTEM_DIR / "aletheia_pending_reembed.json"
+
+
+# ── Safety net (Phase 6.4) ────────────────────────────────
+def _snapshot(full: Path, log_id: str) -> Path | None:
+    """Apply 前把檔案 shadow-copy 到 aletheia_backup/；失敗不阻斷。"""
+    try:
+        import shutil
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dest_dir = ALETHEIA_BACKUP_DIR / f"{stamp}_{log_id}"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / full.name
+        shutil.copy2(full, dest)
+        return dest
+    except Exception as e:
+        print(f"⚠️  snapshot failed: {e}", file=sys.stderr)
+        return None
+
+
+def _mark_pending_reembed(rel_path: str, reason: str) -> None:
+    """body 動過的 memory 記錄到 pending list；之後跑
+    vectorize.py --rebuild 才會更新索引。"""
+    try:
+        data = {}
+        if PENDING_REEMBED.exists():
+            data = json.loads(PENDING_REEMBED.read_text(encoding="utf-8"))
+        entry = data.setdefault(rel_path, {"count": 0, "reasons": []})
+        entry["count"] += 1
+        entry["reasons"].append({"reason": reason, "at": datetime.now().isoformat()})
+        entry["last_marked"] = datetime.now().isoformat()
+        PENDING_REEMBED.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8",
+        )
+    except Exception as e:
+        print(f"⚠️  mark pending reembed failed: {e}", file=sys.stderr)
+
+
+def _is_high_risk_correct(old: str, new: str) -> bool:
+    """CORRECT_TEXT 的啟發式高風險判斷：
+    - 替換字串 > 120 字
+    - 跨 >= 3 行
+    - 新舊長度差 > 200 字
+    """
+    if len(old) > 120 or len(new) > 120:
+        return True
+    if old.count("\n") >= 2 or new.count("\n") >= 2:
+        return True
+    if abs(len(old) - len(new)) > 200:
+        return True
+    return False
 
 
 # ── Tapestry sync (Phase 6.3) ─────────────────────────────
@@ -267,8 +318,11 @@ def add_fact(path: str, fact: str, apply: bool = False, sync: bool = True) -> di
     entry = {"op": "ADD_FACT", "path": path, "before": facts, "after": new_facts,
              "added": fact}
     if apply:
+        entry["id"] = uuid.uuid4().hex[:12]
+        snap = _snapshot(full, entry["id"])
+        if snap: entry["snapshot"] = str(snap.relative_to(SYSTEM_DIR))
         full.write_text(new_content, encoding="utf-8")
-        entry["id"] = _log(entry)
+        _log(entry)
         if sync:
             entry["sync"] = _sync_tapestry(entry, full, new_content)
             print(f"🕸  tapestry: {entry['sync']['detail']}")
@@ -300,8 +354,11 @@ def update_fact(path: str, old: str, new: str, apply: bool = False, sync: bool =
     entry = {"op": "UPDATE_FACT", "path": path, "index": idx,
              "before": old_fact, "after": new}
     if apply:
+        entry["id"] = uuid.uuid4().hex[:12]
+        snap = _snapshot(full, entry["id"])
+        if snap: entry["snapshot"] = str(snap.relative_to(SYSTEM_DIR))
         full.write_text(new_content, encoding="utf-8")
-        entry["id"] = _log(entry)
+        _log(entry)
         if sync:
             # 先 invalidate 舊 evidence 的 person_loc 邊，再 re-weave 新 fact
             inv_entry = {"op": "INVALIDATE_FACT", "path": path, "removed": old_fact,
@@ -338,8 +395,11 @@ def invalidate_fact(path: str, match: str, apply: bool = False, sync: bool = Tru
     entry = {"op": "INVALIDATE_FACT", "path": path, "index": idx,
              "removed": removed, "before": facts, "after": new_facts}
     if apply:
+        entry["id"] = uuid.uuid4().hex[:12]
+        snap = _snapshot(full, entry["id"])
+        if snap: entry["snapshot"] = str(snap.relative_to(SYSTEM_DIR))
         full.write_text(new_content, encoding="utf-8")
-        entry["id"] = _log(entry)
+        _log(entry)
         if sync:
             entry["sync"] = _sync_tapestry(entry, full, new_content)
             print(f"🕸  tapestry: {entry['sync']['detail']}")
@@ -349,8 +409,10 @@ def invalidate_fact(path: str, match: str, apply: bool = False, sync: bool = Tru
     return entry
 
 
-def correct_text(path: str, old: str, new: str, apply: bool = False, sync: bool = True) -> dict:
-    """Body 內 literal substring 替換。old 必須唯一出現以避免誤傷。"""
+def correct_text(path: str, old: str, new: str, apply: bool = False,
+                 sync: bool = True, confirm: bool = False) -> dict:
+    """Body 內 literal substring 替換。old 必須唯一出現以避免誤傷。
+    高風險替換（長字串 / 跨行 / 大幅長度差）需要 confirm=True。"""
     full = _resolve_path(path)
     content = full.read_text(encoding="utf-8")
     fm, body = _split_fm(content)
@@ -359,13 +421,27 @@ def correct_text(path: str, old: str, new: str, apply: bool = False, sync: bool 
     if body.count(old) > 1:
         raise ValueError(f"body 中 {old!r} 出現 {body.count(old)} 次，"
                          "請提供更長、唯一的 substring")
+    high_risk = _is_high_risk_correct(old, new)
+    if apply and high_risk and not confirm:
+        raise ValueError(
+            "高風險 CORRECT_TEXT（長字串 / 跨行 / 大幅長度差）需加 --confirm 旗標",
+        )
     new_body = body.replace(old, new, 1)
     new_content = _assemble(fm, new_body) if fm is not None else new_body
     _show_diff(content, new_content, path)
-    entry = {"op": "CORRECT_TEXT", "path": path, "old": old, "new": new}
+    entry = {"op": "CORRECT_TEXT", "path": path, "old": old, "new": new,
+             "high_risk": high_risk}
     if apply:
+        entry["id"] = uuid.uuid4().hex[:12]
+        snap = _snapshot(full, entry["id"])
+        if snap: entry["snapshot"] = str(snap.relative_to(SYSTEM_DIR))
         full.write_text(new_content, encoding="utf-8")
-        entry["id"] = _log(entry)
+        _log(entry)
+        # body 動了，務必 flag 重嵌
+        rel = _memory_path_for_tapestry(path, full)
+        _mark_pending_reembed(rel, reason=f"aletheia:CORRECT_TEXT:{entry['id']}")
+        print(f"📎 marked {rel} as pending re-embed "
+              "（跑 vectorize.py --rebuild 更新索引）")
         if sync:
             # body 動了，entity set 不變的機率高，但仍 re-weave 以防萬一
             entry["sync"] = _sync_tapestry(entry, full, new_content)
@@ -389,7 +465,9 @@ def revert(log_id: str, apply: bool = False, sync: bool = True) -> dict:
     if op == "UPDATE_FACT":
         return update_fact(path, entry["after"], entry["before"], apply=apply, sync=sync)
     if op == "CORRECT_TEXT":
-        return correct_text(path, entry["new"], entry["old"], apply=apply, sync=sync)
+        # revert of CORRECT_TEXT 本身可能也是高風險；預設 confirm=True（原操作已過 gate）
+        return correct_text(path, entry["new"], entry["old"], apply=apply,
+                            sync=sync, confirm=True)
     raise ValueError(f"不支援的 revert 操作：{op}")
 
 
@@ -423,6 +501,8 @@ def main() -> None:
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--no-sync", action="store_true",
                     help="跳過 Tapestry 同步（預設會同步）")
+    ap.add_argument("--confirm", action="store_true",
+                    help="高風險 CORRECT_TEXT 需要此旗標")
     args = ap.parse_args()
     sync = not args.no_sync
 
@@ -444,7 +524,8 @@ def main() -> None:
         elif args.correct:
             if not (args.old and args.new):
                 ap.error("--correct 需搭配 --old 和 --new")
-            correct_text(args.correct, args.old, args.new, apply=args.apply, sync=sync)
+            correct_text(args.correct, args.old, args.new, apply=args.apply,
+                         sync=sync, confirm=args.confirm)
         elif args.revert:
             revert(args.revert, apply=args.apply, sync=sync)
         else:
