@@ -74,9 +74,34 @@ CONFIGS = {
 }
 
 
+# ── 分層（Phase 5.5）──────────────────────────────────────
+def length_bucket(text: str) -> str:
+    """以問題長度為代理（無需 I/O）：short/medium/long"""
+    n = len(text)
+    if n < 15:
+        return "short"
+    if n < 40:
+        return "medium"
+    return "long"
+
+
+def _stratum_key(item: dict, by: str) -> str:
+    if by == "muse":
+        return muse_of(item["path"])
+    if by == "length":
+        return length_bucket(item["question"])
+    if by == "both":
+        return f"{muse_of(item['path'])}/{length_bucket(item['question'])}"
+    return "all"
+
+
 # ── 抽樣 ──────────────────────────────────────────────────
-def load_samples(n: int, seed: int) -> list[dict]:
-    """從 hyqe_cache 隨機抽 n 題。每個 chunk 抽 1 題（第一題）。"""
+def load_samples(n: int, seed: int, stratify_by: str = "none") -> list[dict]:
+    """從 hyqe_cache 隨機抽 n 題。每個 chunk 抽 1 題（第一題）。
+
+    stratify_by: "none" / "muse" / "length" / "both"
+        none: 純隨機；其他模式依 stratum 比例分配（每層至少 1 題）。
+    """
     cache = json.loads(HYQE_CACHE.read_text(encoding="utf-8"))
     items = []
     for key, qs in cache.items():
@@ -88,14 +113,50 @@ def load_samples(n: int, seed: int) -> list[dict]:
 
     rng = random.Random(seed)
     rng.shuffle(items)
-    return items[:n]
+
+    if stratify_by == "none":
+        return items[:n]
+
+    # 分層：按 stratum 比例抽，加總達 n
+    strata: dict[str, list[dict]] = defaultdict(list)
+    for it in items:
+        strata[_stratum_key(it, stratify_by)].append(it)
+
+    total_pop = sum(len(v) for v in strata.values())
+    picked: list[dict] = []
+    # 先按比例分配配額（四捨五入；每層至少 1）
+    quotas: dict[str, int] = {}
+    for k, pool in strata.items():
+        q = max(1, round(n * len(pool) / total_pop))
+        quotas[k] = min(q, len(pool))
+
+    # 校正總和至 n（可能因捨入偏離）
+    drift = n - sum(quotas.values())
+    keys_desc = sorted(quotas.keys(), key=lambda k: -len(strata[k]))
+    i = 0
+    while drift != 0 and keys_desc:
+        k = keys_desc[i % len(keys_desc)]
+        if drift > 0 and quotas[k] < len(strata[k]):
+            quotas[k] += 1; drift -= 1
+        elif drift < 0 and quotas[k] > 1:
+            quotas[k] -= 1; drift += 1
+        i += 1
+        if i > len(keys_desc) * 4:
+            break
+
+    for k, q in quotas.items():
+        picked.extend(strata[k][:q])
+
+    rng.shuffle(picked)
+    return picked[:n]
 
 
 # ── 評估 ──────────────────────────────────────────────────
 def evaluate(samples: list[dict], config: dict, top_k: int) -> dict:
     hits_at = {1: 0, 5: 0, 10: 0}
     mrr_total = 0.0
-    per_muse_stats = defaultdict(lambda: {"total": 0, "hit@5": 0, "mrr": 0.0})
+    per_muse_stats   = defaultdict(lambda: {"total": 0, "hit@5": 0, "mrr": 0.0})
+    per_length_stats = defaultdict(lambda: {"total": 0, "hit@5": 0, "mrr": 0.0})
     per_question = []
     t0 = time.time()
 
@@ -127,10 +188,17 @@ def evaluate(samples: list[dict], config: dict, top_k: int) -> dict:
             per_muse_stats[muse]["hit@5"] += 1
         per_muse_stats[muse]["mrr"] += rr
 
+        lb = length_bucket(q)
+        per_length_stats[lb]["total"] += 1
+        if rank and rank <= 5:
+            per_length_stats[lb]["hit@5"] += 1
+        per_length_stats[lb]["mrr"] += rr
+
         per_question.append({
             "question": q,
             "target": target,
             "muse": muse,
+            "len_bucket": lb,
             "rank": rank,
             "top_paths": paths[:5],
         })
@@ -154,6 +222,14 @@ def evaluate(samples: list[dict], config: dict, top_k: int) -> dict:
             }
             for m, s in per_muse_stats.items()
         },
+        "per_length": {
+            lb: {
+                "total": s["total"],
+                "recall@5": s["hit@5"] / s["total"] if s["total"] else 0.0,
+                "mrr":      s["mrr"]   / s["total"] if s["total"] else 0.0,
+            }
+            for lb, s in per_length_stats.items()
+        },
         "elapsed_sec": round(elapsed, 2),
         "per_question": per_question,
     }
@@ -176,17 +252,48 @@ def write_report(metrics: dict, meta: dict) -> Path:
         f"- 樣本數：{metrics['n']}  | top_k={meta['top_k']}  | seed={meta['seed']}",
         f"- 耗時：{metrics['elapsed_sec']}s",
         "",
-        "## 總體指標",
-        f"| Recall@1 | Recall@5 | Recall@10 | MRR |",
-        f"|---:|---:|---:|---:|",
-        f"| {metrics['recall@1']:.3f} | {metrics['recall@5']:.3f} | {metrics['recall@10']:.3f} | {metrics['mrr']:.3f} |",
-        "",
+    ]
+    # Phase 5.3: Eternal Mirror + Augury 雙欄對照（若兩者皆有）
+    aug = metrics.get("augury")
+    if aug:
+        md += [
+            "## 總體指標 — Eternal Mirror vs Augury（Phase 5.3）",
+            "| 指標 | Eternal Mirror（自監督）| Augury（人工 golden_set）|",
+            "|---|---:|---:|",
+            f"| N | {metrics['n']} | {aug['n']} |",
+            f"| Recall@1 | {metrics['recall@1']:.3f} | {aug['recall@1']:.3f} |",
+            f"| Recall@5 | {metrics['recall@5']:.3f} | {aug['recall@5']:.3f} |",
+            f"| Recall@10 | {metrics['recall@10']:.3f} | {aug['recall@10']:.3f} |",
+            f"| MRR | {metrics['mrr']:.3f} | {aug['mrr']:.3f} |",
+            "",
+        ]
+    else:
+        md += [
+            "## 總體指標",
+            f"| Recall@1 | Recall@5 | Recall@10 | MRR |",
+            f"|---:|---:|---:|---:|",
+            f"| {metrics['recall@1']:.3f} | {metrics['recall@5']:.3f} | {metrics['recall@10']:.3f} | {metrics['mrr']:.3f} |",
+            "",
+        ]
+    md += [
         "## 分繆思領域",
         "| 繆思 | N | Recall@5 | MRR |",
         "|---|---:|---:|---:|",
     ]
     for muse, s in sorted(metrics["per_muse"].items()):
         md.append(f"| {muse} | {s['total']} | {s['recall@5']:.3f} | {s['mrr']:.3f} |")
+
+    if metrics.get("per_length"):
+        md += [
+            "",
+            "## 分問題長度（Phase 5.5）",
+            "| 長度 bucket | N | Recall@5 | MRR |",
+            "|---|---:|---:|---:|",
+        ]
+        for lb in ("short", "medium", "long"):
+            s = metrics["per_length"].get(lb)
+            if not s: continue
+            md.append(f"| {lb} | {s['total']} | {s['recall@5']:.3f} | {s['mrr']:.3f} |")
 
     md_path.write_text("\n".join(md) + "\n", encoding="utf-8")
     return json_path
@@ -238,6 +345,74 @@ def print_diff(cur: Path, prev: Path, fail_on_regression: bool = False) -> int:
     return regressions
 
 
+# ── Augury golden_set 整合（Phase 5.3）─────────────────────
+def load_golden_set(path: Path) -> list[dict]:
+    """讀 golden_set.yaml → 轉成和 hyqe samples 相同 schema 的 list。
+
+    每題會被展開：可能有多個 expected_paths，任一命中即算 hit。
+    """
+    import yaml
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    items: list[dict] = []
+    for muse, questions in data.items():
+        if not isinstance(questions, list):
+            continue
+        for q in questions:
+            if not isinstance(q, dict) or not q.get("query"):
+                continue
+            expected = q.get("expected_paths") or []
+            if isinstance(expected, str):
+                expected = [expected]
+            items.append({
+                "key": f"golden::{muse}::{q['query'][:30]}",
+                "path": expected[0] if expected else "",
+                "expected_paths": expected,
+                "question": q["query"],
+                "muse_hint": muse,
+                "tags": q.get("tags", []),
+            })
+    return items
+
+
+def evaluate_golden(samples: list[dict], config: dict, top_k: int) -> dict:
+    """Augury 版 evaluate：允許多個 expected_paths，任一命中算 hit。"""
+    hits_at = {1: 0, 5: 0, 10: 0}
+    mrr_total = 0.0
+    per_question = []
+    for sample in samples:
+        q = sample["question"]
+        expected = set(sample.get("expected_paths") or [sample["path"]])
+        try:
+            results = search(q, top_k=top_k, record_access=False, **config)
+        except Exception as e:
+            print(f"  [augury] search failed on {q!r}: {e}")
+            continue
+        paths = [r.get("path", "") for r in results]
+        rank = None
+        for idx, p in enumerate(paths, 1):
+            if p in expected:
+                rank = idx; break
+        rr = 1.0 / rank if rank else 0.0
+        mrr_total += rr
+        for k in hits_at:
+            if rank and rank <= k:
+                hits_at[k] += 1
+        per_question.append({
+            "question": q, "expected": list(expected),
+            "muse_hint": sample.get("muse_hint"),
+            "rank": rank, "top_paths": paths[:5],
+        })
+    n = len(samples)
+    return {
+        "n": n,
+        "recall@1":  hits_at[1] / n if n else 0.0,
+        "recall@5":  hits_at[5] / n if n else 0.0,
+        "recall@10": hits_at[10] / n if n else 0.0,
+        "mrr":       mrr_total / n if n else 0.0,
+        "per_question": per_question,
+    }
+
+
 # ── main ──────────────────────────────────────────────────
 def main() -> None:
     ap = argparse.ArgumentParser()
@@ -250,14 +425,22 @@ def main() -> None:
                     help="--diff 搭配：任一指標跌幅 >2% 時 exit 1（CI 用）")
     ap.add_argument("--hygiene", action="store_true",
                     help="Eval hygiene：排除 hyqe view，避免自我命中（資料洩漏）")
+    ap.add_argument("--stratify-by", default="none",
+                    choices=["none", "muse", "length", "both"],
+                    help="分層抽樣（Phase 5.5）：按 muse/length 維度確保各層都有樣本")
+    ap.add_argument("--golden-set", type=str, default="",
+                    help="Phase 5.3：指定 golden_set.yaml 路徑，"
+                         "將人工 Augury 指標並列到報告裡")
     args = ap.parse_args()
 
     config = dict(CONFIGS[args.config])
     if args.hygiene:
         config["exclude_views"] = ["hyqe"]
-    tag = f"{args.config}{'_hygiene' if args.hygiene else ''}"
-    print(f"🪞 Eternal Mirror · config={tag}  n={args.n}  top_k={args.top_k}  seed={args.seed}")
-    samples = load_samples(args.n, args.seed)
+    strat_tag = f"_strat-{args.stratify_by}" if args.stratify_by != "none" else ""
+    tag = f"{args.config}{'_hygiene' if args.hygiene else ''}{strat_tag}"
+    print(f"🪞 Eternal Mirror · config={tag}  n={args.n}  top_k={args.top_k}  "
+          f"seed={args.seed}  stratify={args.stratify_by}")
+    samples = load_samples(args.n, args.seed, stratify_by=args.stratify_by)
     print(f"   loaded {len(samples)} samples from hyqe_cache.json")
 
     metrics = evaluate(samples, config, args.top_k)
@@ -267,6 +450,26 @@ def main() -> None:
           f"Recall@10={metrics['recall@10']:.3f}  "
           f"MRR={metrics['mrr']:.3f}")
 
+    # Phase 5.3: Augury golden_set 並列
+    augury_metrics = None
+    if args.golden_set:
+        gs_path = Path(args.golden_set)
+        if not gs_path.is_absolute():
+            gs_path = Path(__file__).resolve().parent / args.golden_set
+        if gs_path.exists():
+            gs_samples = load_golden_set(gs_path)
+            if gs_samples:
+                print(f"\n📿 Augury（golden_set）— {len(gs_samples)} 題")
+                augury_metrics = evaluate_golden(gs_samples, config, args.top_k)
+                print(f"   Recall@1={augury_metrics['recall@1']:.3f}  "
+                      f"Recall@5={augury_metrics['recall@5']:.3f}  "
+                      f"Recall@10={augury_metrics['recall@10']:.3f}  "
+                      f"MRR={augury_metrics['mrr']:.3f}")
+            else:
+                print(f"⚠️  golden_set 無有效題目：{gs_path}")
+        else:
+            print(f"⚠️  golden_set 檔案不存在：{gs_path}")
+
     meta = {
         "config_name": tag,
         "config":      config,
@@ -274,6 +477,8 @@ def main() -> None:
         "seed":        args.seed,
         "timestamp":   datetime.now().isoformat(),
     }
+    if augury_metrics is not None:
+        metrics["augury"] = augury_metrics
     out = write_report(metrics, meta)
     print(f"📝 報告：{out}")
 
