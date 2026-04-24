@@ -36,6 +36,9 @@ Personal_Brain_DB/00_System/aletheia_log.jsonl
 Personal_Brain_DB/00_System/aletheia_backup/
 Personal_Brain_DB/00_System/aletheia_pending_reembed.json
 
+# Augury golden_set — 包含真實查詢，保留私有
+Personal_Brain_DB/00_System/benchmark/golden_set.yaml
+
 # FlashRank / HuggingFace 模型快取
 Personal_Brain_DB/00_System/flashrank_cache/
 

@@ -1,0 +1,42 @@
+# Augury Golden Set — 人工標註的檢索真值（Phase 1.1 + Phase 5.3）
+#
+# 用法：
+#   1. 複製一份為 golden_set.yaml（該檔已 gitignore）
+#   2. 填入真實的查詢 + 期望命中 path（依繆思分組）
+#   3. 跑 retrieval_eval.py --golden-set golden_set.yaml
+#      → 報告會新增一節「Augury（人工）」與 Eternal Mirror 並列對照
+#
+# Schema：
+#   每位繆思 5–10 題；每題必填 query + expected_paths（1 個或多個可接受命中）
+#   選填：tags（分類）、notes（設計意圖）
+
+Clio:           # 歷史（30_Journal）
+  - query: "我大學剛畢業時的心境"
+    expected_paths:
+      - "30_Journal/2022/<fill>.md"
+    tags: [identity, early-career]
+    notes: "測試情緒類語境召回"
+
+Calliope:       # 對話（20_AI_Chats）
+  - query: "關於 RAG 架構我和 AI 討論過什麼"
+    expected_paths:
+      - "20_AI_Chats/Gemini/<fill>.md"
+    tags: [technical, chat]
+
+Urania:         # 知識（50_Knowledge）
+  - query: "ACT-R 認知模型的衰減公式"
+    expected_paths:
+      - "50_Knowledge/<fill>.md"
+    tags: [knowledge]
+
+Polyhymnia:     # Profile（10_Profile）
+  - query: "我的職涯目標"
+    expected_paths:
+      - "10_Profile/career.md"
+    tags: [profile]
+
+Terpsichore:    # 行動（40_Projects）
+  - query: "Memosyne v0.2 我做了哪些優化"
+    expected_paths:
+      - "40_Projects/<fill>.md"
+    tags: [projects]
