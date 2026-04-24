@@ -31,6 +31,11 @@ spring/*.txt
 # 向量資料庫
 Personal_Brain_DB/00_System/chroma_db/
 
+# Aletheia 私有狀態（log + snapshot + reembed queue）
+Personal_Brain_DB/00_System/aletheia_log.jsonl
+Personal_Brain_DB/00_System/aletheia_backup/
+Personal_Brain_DB/00_System/aletheia_pending_reembed.json
+
 # FlashRank / HuggingFace 模型快取
 Personal_Brain_DB/00_System/flashrank_cache/
 

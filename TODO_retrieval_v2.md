@@ -245,14 +245,20 @@
 - [x] 新增 5 個 MCP tools：`aletheia_add_fact` / `aletheia_update_fact` / `aletheia_invalidate_fact` / `aletheia_correct_text` / `aletheia_revert`
 - [x] 預設 `apply=False`（dry-run），回傳 `_aletheia_summarize(entry)` 文字
 
-### 6.3 Tapestry 整合
-- [ ] Aletheia 改 personal_facts → 自動同步 Tapestry 邊（新增/invalidate）
-- [ ] MERGE 操作觸發 Naming Rite 的 alias 合併邏輯
+### 6.3 Tapestry 整合 → **已實作（commit 876b5e9）**
+- [x] Aletheia 改 personal_facts → 自動同步 Tapestry 邊
+  - ADD/CORRECT/UPDATE → re-weave（MERGE 冪等）
+  - INVALIDATE → `invalidate_edge()` 按 evidence 前綴比對 person_loc 邊
+  - `invalidated_by` 標記 `aletheia:<log_id>`，可追溯
+- [x] `--no-sync` 旗標跳過同步（bulk / Kuzu lock 時用）
+- [ ] MERGE 操作觸發 Naming Rite 的 alias 合併邏輯（延後）
 
-### 6.4 安全網
-- [ ] 每次 apply 前自動 git snapshot（或 shadow copy 到 `aletheia_backup/`）
-- [ ] 高風險操作（CORRECT_TEXT / MERGE）需二次確認
-- [ ] Aletheia 操作觸發該記憶 re-embedding（保持索引一致）
+### 6.4 安全網 → **已實作（commit 待填）**
+- [x] 每次 apply 前自動 shadow copy 到 `aletheia_backup/<timestamp>_<log_id>/`
+- [x] 高風險 CORRECT_TEXT 需 `--confirm`（長字串 / 跨行 / 大幅長度差觸發）
+- [x] body 改動標記到 `aletheia_pending_reembed.json`，使用者跑 `vectorize.py --rebuild` 即可重嵌
+- [x] `.gitignore`：log + backup + pending 不進 git
+- [ ] 單檔 re-embed 介面（目前仍需 full rebuild）—— 延後
 
 ---
 
