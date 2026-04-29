@@ -175,6 +175,10 @@ python3 Personal_Brain_DB/00_System/ingest.py --rebuild     # full index rebuild
 ### Search your memories
 
 ```bash
+# v0.3 command surface
+python3 memosyne.py health
+python3 memosyne.py search "happiest days in 2025" --top 5
+
 # Interactive search REPL
 python3 Personal_Brain_DB/00_System/search.py
 
@@ -232,6 +236,28 @@ Add to your MCP config (`~/.claude/claude_desktop_config.json` or equivalent):
 | `mneme_weight.py` | ACT-R access log and cognitive decay | `--stats` `--top` `--score` |
 | `slumber.py` | Memory consolidation | `--reflect` `--hebbian` `--forget` `--stats` |
 | `watch.py` | Filesystem watcher daemon | — |
+
+### v0.3 Command Surface
+
+The v0.3 CLI is a thin wrapper over the existing scripts:
+
+```bash
+python3 memosyne.py init
+python3 memosyne.py ingest
+python3 memosyne.py search "sample query"
+python3 memosyne.py rebuild
+python3 memosyne.py health
+python3 memosyne.py mcp --check
+python3 memosyne.py slumber --stats
+python3 memosyne.py chronicle --stats
+```
+
+After editable install, the same commands are available as `memosyne ...`:
+
+```bash
+pip install -e .
+memosyne health
+```
 
 ---
 
