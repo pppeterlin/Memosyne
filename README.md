@@ -152,8 +152,10 @@ python3 Personal_Brain_DB/00_System/slumber.py --forget --dry-run
 
 ```bash
 # Clone and set up environment
-git clone https://github.com/yourname/personal-memory
-cd personal-memory
+git clone https://github.com/yourname/memosyne
+cd memosyne
+python -m venv .venv
+source .venv/bin/activate
 pip install -r Personal_Brain_DB/00_System/requirements.txt
 ```
 
@@ -201,7 +203,7 @@ Add to your MCP config (`~/.claude/claude_desktop_config.json` or equivalent):
     "personal-brain": {
       "command": "/path/to/your/venv/bin/python",
       "args": [
-        "/path/to/personal-memory/Personal_Brain_DB/00_System/mcp_server.py"
+        "/path/to/memosyne/Personal_Brain_DB/00_System/mcp_server.py"
       ]
     }
   }
@@ -258,6 +260,8 @@ After editable install, the same commands are available as `memosyne ...`:
 pip install -e .
 memosyne health
 ```
+
+Daily operations and troubleshooting are documented in [docs/operations.md](docs/operations.md).
 
 ---
 
@@ -316,7 +320,7 @@ entities:
 ## Repository Structure
 
 ```
-personal-memory/
+memosyne/
 ├── Personal_Brain_DB/
 │   ├── 00_System/      ← all scripts, indices, databases
 │   ├── 10_Profile/     ← your profile (gitignored)
