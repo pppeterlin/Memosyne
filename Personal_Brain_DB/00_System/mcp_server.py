@@ -19,9 +19,12 @@ Claude Desktop 設定（~/.claude/claude_desktop_config.json）：
 
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
+from model_env import configure_hf_runtime
 
 BASE = Path(__file__).parent.parent
 sys_dir = Path(__file__).parent
+
+configure_hf_runtime()
 
 mcp = FastMCP("personal-brain")
 

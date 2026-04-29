@@ -54,7 +54,7 @@ _TEMPORAL_COLUMNS = [
 ]
 
 BASE          = Path(__file__).parent.parent
-TAPESTRY_DB   = Path(__file__).parent / "tapestry_db"
+TAPESTRY_DB   = (Path(__file__).parent / "tapestry_db").resolve()
 
 # ─── 資料庫初始化 ────────────────────────────────────────────
 
