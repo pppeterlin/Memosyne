@@ -35,12 +35,25 @@ import re
 from pathlib import Path
 
 from model_env import configure_hf_runtime
+try:
+    from artifacts import artifact_path, ensure_parent
+except ImportError:
+    def artifact_path(name: str) -> Path:
+        mapping = {
+            "bm25_index": "bm25_index.pkl",
+            "contextual_cache": "contextual_cache.json",
+            "hyqe_cache": "hyqe_cache.json",
+        }
+        return Path(__file__).parent / mapping.get(name, name)
+
+    def ensure_parent(path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
 
 BASE         = Path(__file__).parent.parent
 CHROMA_DIR   = Path(__file__).parent / "chroma_db"
-BM25_PATH    = Path(__file__).parent / "bm25_index.pkl"
-CTX_CACHE    = Path(__file__).parent / "contextual_cache.json"
-HYQE_CACHE   = Path(__file__).parent / "hyqe_cache.json"
+BM25_PATH    = artifact_path("bm25_index")
+CTX_CACHE    = artifact_path("contextual_cache")
+HYQE_CACHE   = artifact_path("hyqe_cache")
 EMBED_MODEL  = "paraphrase-multilingual-MiniLM-L12-v2"
 COLLECTION   = "personal_brain"
 MIN_PARA_LEN = 25   # 少於此字數的段落略過（通常是標題殘留）
@@ -288,6 +301,7 @@ def _save_ctx_cache(cache: dict[str, str]) -> None:
     """儲存 contextual notes 快取。"""
     global _ctx_cache
     _ctx_cache = cache
+    ensure_parent(CTX_CACHE)
     CTX_CACHE.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -406,6 +420,7 @@ def _save_hyqe_cache(cache: dict) -> None:
     """儲存 HyQE 快取。"""
     global _hyqe_cache
     _hyqe_cache = cache
+    ensure_parent(HYQE_CACHE)
     HYQE_CACHE.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -730,6 +745,7 @@ def build_bm25_index(all_chunks: list[dict]) -> None:
         "texts":  corpus_texts,
         "bm25":   bm25,
     }
+    ensure_parent(BM25_PATH)
     BM25_PATH.write_bytes(pickle.dumps(data))
     print(f"[BM25] 已建立索引：{len(corpus_ids)} 個 chunks → {BM25_PATH.name}")
 
