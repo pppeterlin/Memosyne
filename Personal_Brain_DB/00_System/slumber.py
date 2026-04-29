@@ -121,7 +121,7 @@ def reflect(days: int = 14, model: str = "gemma3:4b", dry_run: bool = False) -> 
     Returns:
         生成的 reflection 檔案路徑，或 None（如果沒有足夠記憶）。
     """
-    import ollama
+    from llm_client import chat_text
 
     memories = _collect_recent_memories(days)
     if len(memories) < 3:
@@ -143,14 +143,12 @@ def reflect(days: int = 14, model: str = "gemma3:4b", dry_run: bool = False) -> 
 
     print(f"  Mnemosyne dreams upon {len(memories)} recent memories...")
 
-    resp = ollama.chat(
+    raw = chat_text(
         model=model,
         messages=[{"role": "user", "content": prompt}],
-        stream=False,
+        temperature=0.3,
         think=False,
-        options={"temperature": 0.3},
-    )
-    raw = resp["message"]["content"].strip()
+    ).strip()
 
     # 解析 JSON
     start = raw.find("{")
@@ -205,6 +203,202 @@ def reflect(days: int = 14, model: str = "gemma3:4b", dry_run: bool = False) -> 
     filepath.write_text("\n".join(content_lines), encoding="utf-8")
     print(f"  Reflection woven: {filepath.relative_to(BASE)}")
     return str(filepath.relative_to(BASE))
+
+
+# ═══════════════════════════════════════════════════════════════
+#  1b. Aggregation Dream — 跨記憶主題聚合（Phase 4.1.a）
+# ═══════════════════════════════════════════════════════════════
+
+AGGREGATION_PROMPT = """\
+You are Mnemosyne, reviewing the complete factual record of your mortal charge.
+
+Below is a list of discrete personal facts, each tagged with its source memory path.
+Your task: cluster these facts into THEMES, then for each theme write a concise
+1-paragraph synthesis (繁體中文) that weaves the facts together as a coherent
+self-portrait.
+
+Canonical themes (use these slugs; omit a theme if no facts fit):
+  places        — cities/countries visited or lived in
+  people        — recurring persons in the charge's life
+  possessions   — owned items, gear, identifiers (e.g. glasses model, car plate)
+  habits        — routines, preferences, recurring behaviors
+  values        — stated beliefs, priorities, stances
+  career        — work, projects, professional context
+  interests     — hobbies, topics repeatedly engaged with
+
+Rules:
+- ONLY use facts present in the input. Do not infer beyond what is stated.
+- A single fact may belong to multiple themes — duplicate if truly ambiguous.
+- Cite every claim's source_path in the facts[] list of each theme.
+- Synthesis paragraphs should be 2–4 sentences, fact-grounded, no speculation.
+
+Return JSON only:
+{{
+  "themes": [
+    {{
+      "slug": "places",
+      "title": "走過的地方",
+      "synthesis": "...",
+      "facts": [
+        {{"fact": "...", "source_path": "..."}}
+      ]
+    }}
+  ]
+}}
+
+Input facts ({count} total):
+{facts}
+"""
+
+
+def _collect_all_personal_facts(max_facts: int = 400) -> list[dict]:
+    """遍歷整個 vault，收集所有 personal_facts。"""
+    facts: list[dict] = []
+    for md_file in BASE.rglob("*.md"):
+        # 跳過系統目錄、Profile aggregates 自身
+        rel_parts = md_file.relative_to(BASE).parts
+        if rel_parts[0] in EXCLUDE_DIRS or md_file.name in EXCLUDE_FILES:
+            continue
+        if len(rel_parts) >= 2 and rel_parts[0] == "10_Profile" and rel_parts[1] == "aggregates":
+            continue
+        try:
+            content = md_file.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        if not content.startswith("---"):
+            continue
+        end = content.find("\n---", 3)
+        if end < 0:
+            continue
+        fm = content[4:end]
+        # 輕量 parse：抓 personal_facts flow list 或 block list
+        m = re.search(r'^personal_facts:\s*(.*)$', fm, re.MULTILINE)
+        if not m:
+            continue
+        rest = m.group(1).strip()
+        pf: list[str] = []
+        if rest.startswith("["):
+            try:
+                pf = json.loads(rest)
+            except Exception:
+                pf = []
+        else:
+            lines = fm.splitlines()
+            for i, ln in enumerate(lines):
+                if ln.startswith("personal_facts:"):
+                    for sub in lines[i+1:]:
+                        if re.match(r'^\s*-\s+', sub):
+                            val = sub.split("-", 1)[1].strip().strip('"').strip("'")
+                            pf.append(val)
+                        elif sub and not sub.startswith(" "):
+                            break
+                    break
+        rel = str(md_file.relative_to(BASE))
+        if rel.startswith("_vault/"):
+            rel = rel[len("_vault/"):]
+        for fact in pf:
+            if isinstance(fact, str) and fact.strip():
+                facts.append({"fact": fact.strip(), "source_path": rel})
+        if len(facts) >= max_facts:
+            break
+    return facts
+
+
+def aggregation_dream(
+    model: str = "proxy:claude-opus-4-6",
+    dry_run: bool = False,
+    max_facts: int = 400,
+) -> list[str]:
+    """Aggregation Dream — 跨記憶主題聚合。
+
+    從全庫 personal_facts 聚出主題 profile，寫入 10_Profile/aggregates/。
+    回傳：寫出的檔案路徑 list。
+    """
+    from llm_client import chat_text
+
+    facts = _collect_all_personal_facts(max_facts=max_facts)
+    if len(facts) < 5:
+        print(f"  The facts are too few for aggregation: {len(facts)}")
+        return []
+
+    print(f"  Mnemosyne weaves {len(facts)} facts into themes...")
+    fact_text = "\n".join(
+        f"- \"{f['fact']}\"  [source: {f['source_path']}]"
+        for f in facts[:max_facts]
+    )
+    prompt = AGGREGATION_PROMPT.format(count=len(facts), facts=fact_text[:8000])
+
+    raw = chat_text(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.2,
+        think=False,
+    ).strip()
+
+    start = raw.find("{"); end = raw.rfind("}")
+    if start < 0 or end < 0:
+        print(f"  Oracle's vision unclear: {raw[:200]}")
+        return []
+    try:
+        result = json.loads(raw[start:end+1])
+    except json.JSONDecodeError:
+        print(f"  Oracle's vision unreadable: {raw[:200]}")
+        return []
+
+    themes = result.get("themes", []) or []
+    if not themes:
+        print("  No themes emerged from the dream.")
+        return []
+
+    if dry_run:
+        print(f"\n  [DRY-RUN] {len(themes)} themes aggregated:")
+        for th in themes:
+            print(f"    {th.get('slug','?')} ({len(th.get('facts',[]))} facts): "
+                  f"{(th.get('synthesis','') or '')[:80]}...")
+        return []
+
+    agg_dir = BASE / "10_Profile" / "aggregates"
+    agg_dir.mkdir(parents=True, exist_ok=True)
+    now = datetime.now()
+    written: list[str] = []
+
+    for th in themes:
+        slug = th.get("slug", "misc")
+        # slug 安全化
+        slug_safe = re.sub(r"[^a-z0-9_-]", "", slug.lower()) or "misc"
+        title = th.get("title", slug)
+        synthesis = th.get("synthesis", "").strip()
+        th_facts = th.get("facts", []) or []
+        if not synthesis or not th_facts:
+            continue
+
+        fpath = agg_dir / f"{slug_safe}.md"
+        sources = sorted({f.get("source_path", "") for f in th_facts if f.get("source_path")})
+
+        md = [
+            "---",
+            f'title: "Aggregate — {title}"',
+            f'date_updated: "{now.strftime("%Y-%m-%d")}"',
+            f'type: "aggregate"',
+            f'theme: "{slug_safe}"',
+            f'source: "slumber:aggregation_dream"',
+            f'summary: "{synthesis[:80]}"',
+            "source_paths:",
+        ]
+        for s in sources:
+            md.append(f'  - "{s}"')
+        md += ["---", "", f"# {title}", "", synthesis, "",
+               "## 事實來源", ""]
+        for f in th_facts:
+            md.append(f"- \"{f.get('fact','')}\"  ({f.get('source_path','')})")
+        md.append("")
+
+        fpath.write_text("\n".join(md), encoding="utf-8")
+        rel = str(fpath.relative_to(BASE))
+        written.append(rel)
+        print(f"  ✨ {rel}  ({len(th_facts)} facts)")
+
+    return written
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -409,8 +603,433 @@ def strategic_forgetting(
 
 
 # ═══════════════════════════════════════════════════════════════
-#  統計
+#  4. The Naming Rite — 實體正規化（Entity Resolution）
 # ═══════════════════════════════════════════════════════════════
+
+NAMING_LOG = SYSTEM_DIR / "naming_log.jsonl"
+
+NAMING_CONFIRM_PROMPT = """\
+You are Mnemosyne, guardian of true names.
+Below are person names extracted from memories. They may refer to the same person under different spellings.
+
+For each candidate group, answer: are these names the SAME person?
+Only confirm if you are confident. When in doubt, say no.
+
+Candidates:
+{candidates}
+
+Return a JSON array of confirmed groups. Each group is an object with:
+- "canonical": the best/most complete name to keep
+- "aliases": list of other names that refer to the same person
+
+Example:
+[
+  {{"canonical": "friend-A", "aliases": ["friend A", "Friend_A"]}},
+  {{"canonical": "小明", "aliases": ["XiaoMing"]}}
+]
+
+If no groups should be merged, return [].
+Respond ONLY with the JSON array.
+"""
+
+
+def _normalize_person_name(name: str) -> str:
+    """正規化人名：lowercase / 去連字號 / 去底線 / strip。"""
+    return name.lower().replace("-", "").replace("_", "").replace(" ", "").strip()
+
+
+def _embed_names(names: list[str]) -> dict[str, list[float]]:
+    """用 sentence-transformers 為人名產生 embedding。"""
+    from model_env import configure_hf_runtime
+    configure_hf_runtime()
+    from sentence_transformers import SentenceTransformer
+
+    model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
+    embeddings = model.encode(names, normalize_embeddings=True)
+    return {name: emb.tolist() for name, emb in zip(names, embeddings)}
+
+
+def _cosine_sim(a: list[float], b: list[float]) -> float:
+    """計算兩個向量的 cosine similarity。"""
+    dot = sum(x * y for x, y in zip(a, b))
+    return dot  # 已 normalize，dot product = cosine similarity
+
+
+def naming_rite(
+    model: str = "gemma3:4b",
+    similarity_threshold: float = 0.85,
+    dry_run: bool = False,
+) -> int:
+    """
+    The Naming Rite — 真名歸一。
+
+    1. 收集所有 Person 節點
+    2. 正規化名稱，找出完全匹配的組
+    3. 對剩餘名稱做 embedding 相似度聚類
+    4. LLM 二次確認候選合併對
+    5. 合併節點：邊重導 + aliases 更新
+    6. 寫入 naming_log.jsonl
+
+    Returns:
+        合併的節點數量
+    """
+    from tapestry import get_all_persons, merge_persons, _person_edge_count, get_conn
+
+    conn = get_conn()
+    persons = get_all_persons(conn)
+
+    if len(persons) < 2:
+        print("  Too few names in the Tapestry for the Naming Rite.")
+        return 0
+
+    print(f"  Examining {len(persons)} person nodes...")
+
+    # ── Phase 1: 正規化完全匹配 ──────────────────────────────
+    norm_groups: dict[str, list[str]] = {}
+    for p in persons:
+        norm = _normalize_person_name(p["name"])
+        norm_groups.setdefault(norm, []).append(p["name"])
+
+    # 只保留有多個名稱的組
+    exact_candidates = {k: v for k, v in norm_groups.items() if len(v) > 1}
+
+    # 已被 exact match 處理的名稱
+    exact_matched = set()
+    for names in exact_candidates.values():
+        exact_matched.update(names)
+
+    # ── Phase 2: embedding 相似度聚類（剩餘名稱）─────────────
+    remaining = [p["name"] for p in persons if p["name"] not in exact_matched]
+    embed_candidates: list[tuple[str, str, float]] = []
+
+    if len(remaining) >= 2:
+        print(f"  Computing embeddings for {len(remaining)} remaining names...")
+        name_embeddings = _embed_names(remaining)
+
+        for i, name_a in enumerate(remaining):
+            for name_b in remaining[i + 1:]:
+                sim = _cosine_sim(name_embeddings[name_a], name_embeddings[name_b])
+                if sim >= similarity_threshold:
+                    embed_candidates.append((name_a, name_b, sim))
+
+    # ── 合併候選列表 ─────────────────────────────────────────
+    # exact match 組直接進入候選（不需 LLM 確認）
+    confirmed_groups: list[dict] = []
+
+    for norm_key, names in exact_candidates.items():
+        # 選邊數最多的作為 canonical
+        best = max(names, key=lambda n: _person_edge_count(conn, n))
+        aliases = [n for n in names if n != best]
+        confirmed_groups.append({"canonical": best, "aliases": aliases, "method": "exact"})
+
+    # embedding 候選需要 LLM 確認
+    if embed_candidates:
+        # 把 pair 聚合成組（union-find 簡化版）
+        parent: dict[str, str] = {}
+
+        def find(x: str) -> str:
+            while parent.get(x, x) != x:
+                x = parent[x]
+            return x
+
+        def union(a: str, b: str) -> None:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        for name_a, name_b, _ in embed_candidates:
+            union(name_a, name_b)
+
+        embed_groups: dict[str, list[str]] = {}
+        for name_a, name_b, _ in embed_candidates:
+            for n in (name_a, name_b):
+                root = find(n)
+                embed_groups.setdefault(root, set()).add(n)
+        embed_groups = {k: sorted(v) for k, v in embed_groups.items()}
+
+        # LLM 確認
+        if embed_groups:
+            cand_text = "\n".join(
+                f"  Group {i+1}: {', '.join(names)}"
+                for i, names in enumerate(embed_groups.values())
+            )
+            print(f"  Asking the Oracle to confirm {len(embed_groups)} embedding-based groups...")
+
+            try:
+                from llm_client import chat_text
+                prompt = NAMING_CONFIRM_PROMPT.format(candidates=cand_text)
+                raw = chat_text(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0,
+                    think=False,
+                ).strip()
+                start = raw.find("[")
+                end = raw.rfind("]")
+                if start != -1 and end != -1:
+                    llm_groups = json.loads(raw[start:end + 1])
+                    for g in llm_groups:
+                        if isinstance(g, dict) and "canonical" in g and "aliases" in g:
+                            confirmed_groups.append({
+                                "canonical": g["canonical"],
+                                "aliases": g["aliases"],
+                                "method": "embedding+llm",
+                            })
+            except Exception as e:
+                print(f"  The Oracle's vision was unclear: {e}")
+
+    if not confirmed_groups:
+        print("  All names are distinct — no merging needed.")
+        return 0
+
+    # ── 顯示結果 ─────────────────────────────────────────────
+    total_aliases = sum(len(g["aliases"]) for g in confirmed_groups)
+    print(f"\n  Found {len(confirmed_groups)} groups to merge ({total_aliases} aliases):")
+    for g in confirmed_groups:
+        method_tag = f"[{g['method']}]"
+        print(f"    {method_tag} {g['canonical']} ← {', '.join(g['aliases'])}")
+
+    if dry_run:
+        print("\n  [DRY-RUN] No changes made.")
+        return 0
+
+    # ── 執行合併 ─────────────────────────────────────────────
+    merged_total = 0
+    log_entries = []
+
+    for g in confirmed_groups:
+        canonical = g["canonical"]
+        aliases = g["aliases"]
+        edges = merge_persons(conn, canonical, aliases)
+        merged_total += len(aliases)
+
+        log_entries.append({
+            "timestamp": datetime.now().isoformat(),
+            "action": "merge",
+            "canonical": canonical,
+            "merged": aliases,
+            "method": g["method"],
+            "edges_redirected": edges,
+        })
+
+    # ── 寫入 naming_log.jsonl ────────────────────────────────
+    with open(NAMING_LOG, "a", encoding="utf-8") as f:
+        for entry in log_entries:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    print(f"\n  The Naming Rite is complete: {merged_total} names unified.")
+    print(f"  Merge log: {NAMING_LOG.relative_to(BASE)}")
+    return merged_total
+
+# ═══════════════════════════════════════════════════════════════
+#  5. The Ordeal — 衝突處理 CRUD（UPDATE / INVALIDATE / NOOP）
+# ═══════════════════════════════════════════════════════════════
+
+ORDEAL_LOG = SYSTEM_DIR / "ordeal_log.jsonl"
+
+ORDEAL_PROMPT = """\
+You are the Arbiter of the Ordeal, servant of Mnemosyne.
+You must adjudicate the personal facts below regarding the subject: {subject}.
+
+The Tapestry currently believes these claims about the subject (edge, object):
+{old_claims}
+
+Recent memories assert these new facts (path, date, fact):
+{new_facts}
+
+For each NEW FACT, decide the operation:
+- ADD        : genuinely new information, no prior belief exists on this aspect
+- UPDATE     : the new fact supersedes an older belief (e.g. person moved)
+            → identify the old belief by `old_object` (the string matching one of the claims)
+- INVALIDATE : the new fact explicitly negates an older belief (e.g. "no longer …")
+            → identify the old belief by `old_object`
+- NOOP       : the new fact restates an existing belief (reinforcement only)
+
+Speak ONLY in pure JSON:
+
+{{
+  "operations": [
+    {{
+      "fact": "<original fact text>",
+      "operation": "ADD|UPDATE|INVALIDATE|NOOP",
+      "rel": "person_loc|person_event|mem_person",
+      "old_object": "<name, only for UPDATE or INVALIDATE>",
+      "new_object": "<name, for ADD or UPDATE>",
+      "reason": "<short>"
+    }}
+  ]
+}}
+"""
+
+
+def _collect_recent_facts(days: int) -> list[dict]:
+    """收集最近 N 天記憶中的 personal_facts（含來源 metadata）。"""
+    import yaml
+    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    facts: list[dict] = []
+    for md in sorted(BASE.rglob("*.md")):
+        parts = md.relative_to(BASE).parts
+        if parts[0] in EXCLUDE_DIRS or md.name in EXCLUDE_FILES:
+            continue
+        content = md.read_text(encoding="utf-8")
+        if not content.startswith("---"):
+            continue
+        end = content.find("\n---", 3)
+        if end < 0:
+            continue
+        raw_fm = content[3:end]
+        clean = [ln for ln in raw_fm.split("\n") if not ln.strip().startswith("#")]
+        try:
+            fm = yaml.safe_load("\n".join(clean)) or {}
+        except Exception:
+            continue
+        if not isinstance(fm, dict):
+            continue
+        date = str(fm.get("date_created", "") or "")[:10]
+        if date < cutoff:
+            continue
+        ents = fm.get("entities", {}) or {}
+        people = ents.get("people", []) or []
+        for fact in fm.get("personal_facts", []) or []:
+            if not isinstance(fact, str) or not fact.strip():
+                continue
+            for person in people:
+                if person and person in fact:
+                    facts.append({
+                        "path":   str(md.relative_to(BASE)),
+                        "date":   date,
+                        "fact":   fact.strip(),
+                        "person": person,
+                    })
+    return facts
+
+
+def the_ordeal(days: int = 30, model: str = "gemma3:4b",
+               dry_run: bool = True) -> int:
+    """
+    The Ordeal — 衝突處理。針對近期 personal_facts 與 Tapestry 既有信念交叉檢查。
+
+    dry_run=True 時僅產生 log，不寫入邊的失效戳記。
+    回傳：本次處理的事實數（非 NOOP）。
+    """
+    from llm_client import chat_text
+
+    try:
+        from tapestry import get_conn, invalidate_edge
+    except ImportError:
+        print("  Tapestry 不可用，The Ordeal 跳過。")
+        return 0
+
+    facts = _collect_recent_facts(days)
+    if not facts:
+        print(f"  No personal_facts in past {days} days. The Ordeal rests.")
+        return 0
+
+    # 按人分組，只保留同一 person 被提及 ≥2 次者（有潛在衝突）
+    from collections import defaultdict
+    by_person: dict[str, list[dict]] = defaultdict(list)
+    for f in facts:
+        by_person[f["person"]].append(f)
+    candidates = {p: fs for p, fs in by_person.items() if len(fs) >= 2}
+
+    if not candidates:
+        print(f"  {len(facts)} facts collected; none with ≥2 mentions per person.")
+        return 0
+
+    conn = get_conn()
+    applied = 0
+    log_entries: list[dict] = []
+
+    for person, person_facts in candidates.items():
+        # 取該人目前有效的 person_loc / person_event 邊作為「舊信念」
+        old_claims: list[dict] = []
+        for rel in ("person_loc", "person_event"):
+            try:
+                r = conn.execute(
+                    f"MATCH (p:Person {{name: $n}})-[e:{rel}]->(x) "
+                    f"WHERE e.t_valid_end IS NULL "
+                    f"RETURN '{rel}' AS rel, x.name AS obj",
+                    {"n": person},
+                )
+                for row in r.get_as_df().to_dict(orient="records"):
+                    old_claims.append(row)
+            except Exception:
+                continue
+
+        prompt = ORDEAL_PROMPT.format(
+            subject=person,
+            old_claims=json.dumps(old_claims, ensure_ascii=False, indent=2) or "[]",
+            new_facts=json.dumps(person_facts, ensure_ascii=False, indent=2),
+        )
+        try:
+            raw = chat_text(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                think=False,
+            ).strip()
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start == -1 or end == -1:
+                raise ValueError("no JSON")
+            verdict = json.loads(raw[start:end + 1])
+        except Exception as e:
+            print(f"  [Ordeal] arbiter faltered for {person}: {e}")
+            continue
+
+        ops = verdict.get("operations", []) or []
+        for op in ops:
+            if not isinstance(op, dict):
+                continue
+            op_type = str(op.get("operation", "")).upper()
+            entry = {
+                "when":     datetime.now().isoformat(timespec="seconds"),
+                "subject":  person,
+                "operation":op_type,
+                "rel":      op.get("rel", ""),
+                "fact":     op.get("fact", ""),
+                "old_object": op.get("old_object", ""),
+                "new_object": op.get("new_object", ""),
+                "reason":   op.get("reason", ""),
+                "applied":  False,
+            }
+
+            if op_type in ("UPDATE", "INVALIDATE") and not dry_run:
+                rel = op.get("rel") or "person_loc"
+                old_obj = op.get("old_object")
+                if old_obj and rel in ("person_loc", "person_event"):
+                    to_label = "Location" if rel == "person_loc" else "Event"
+                    # 來源是最新的 fact 來自哪份記憶
+                    src_fact = next(
+                        (f for f in person_facts if f["fact"] == op.get("fact")),
+                        person_facts[0],
+                    )
+                    try:
+                        n = invalidate_edge(
+                            conn, rel, "Person", person, to_label, old_obj,
+                            invalidated_by=src_fact["path"],
+                        )
+                        entry["applied"] = n > 0
+                        applied += n
+                    except Exception as e:
+                        entry["error"] = str(e)
+
+            log_entries.append(entry)
+
+    # 寫 log
+    if log_entries:
+        ORDEAL_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(ORDEAL_LOG, "a", encoding="utf-8") as f:
+            for e in log_entries:
+                f.write(json.dumps(e, ensure_ascii=False) + "\n")
+
+    non_noop = sum(1 for e in log_entries if e["operation"] != "NOOP")
+    mode = "DRY-RUN" if dry_run else "APPLIED"
+    print(f"  The Ordeal ({mode}): {len(log_entries)} verdicts, "
+          f"{non_noop} non-noop, {applied} edges invalidated.")
+    print(f"  Log: {ORDEAL_LOG.relative_to(BASE) if ORDEAL_LOG.is_relative_to(BASE) else ORDEAL_LOG}")
+    return non_noop
+
 
 def slumber_stats():
     """顯示鞏固統計。"""
@@ -448,18 +1067,26 @@ def main():
     ap.add_argument("--reflect",  action="store_true", help="Reflection — 從近期記憶提煉洞察")
     ap.add_argument("--hebbian",  action="store_true", help="Hebbian Learning — 共現記憶強化")
     ap.add_argument("--forget",   action="store_true", help="Strategic Forgetting — 策略性遺忘")
+    ap.add_argument("--naming",   action="store_true", help="The Naming Rite — 實體正規化")
+    ap.add_argument("--ordeal",   action="store_true", help="The Ordeal — 衝突處理（personal_facts）")
+    ap.add_argument("--aggregate", action="store_true",
+                    help="Aggregation Dream — 跨記憶主題聚合（Phase 4.1.a）")
+    ap.add_argument("--agg-model", type=str, default="proxy:claude-opus-4-6",
+                    help="Aggregation Dream 用 LLM（預設 proxy:claude-opus-4-6）")
+    ap.add_argument("--max-facts", type=int, default=400, help="Aggregation 最多收集的 facts 數")
     ap.add_argument("--stats",    action="store_true", help="顯示鞏固統計")
     ap.add_argument("--dry-run",  action="store_true", help="預覽模式，不實際寫入")
     ap.add_argument("--days",     type=int, default=14, help="Reflection 回顧天數（預設 14）")
-    ap.add_argument("--model",    type=str, default="gemma3:4b", help="LLM 模型（Reflection 用）")
-    ap.add_argument("--all",      action="store_true", help="執行完整鞏固（三個儀式全做）")
+    ap.add_argument("--model",    type=str, default="gemma3:4b", help="LLM 模型（Reflection / Naming 用）")
+    ap.add_argument("--all",      action="store_true", help="執行完整鞏固（四個儀式全做）")
     args = ap.parse_args()
 
     if args.stats:
         slumber_stats()
         return
 
-    run_all = args.all or not (args.reflect or args.hebbian or args.forget)
+    run_all = args.all or not (args.reflect or args.hebbian or args.forget
+                                or args.naming or args.ordeal or args.aggregate)
 
     if run_all:
         print("🌙 The Rite of Slumber begins...\n")
@@ -477,6 +1104,23 @@ def main():
     if args.forget or run_all:
         print("═══ III. The Lethe Protocol ═══")
         strategic_forgetting(dry_run=args.dry_run)
+        print()
+
+    if args.naming or run_all:
+        print("═══ IV. The Naming Rite ═══")
+        naming_rite(model=args.model, dry_run=args.dry_run)
+        print()
+
+    if args.ordeal or run_all:
+        print("═══ V. The Ordeal ═══")
+        the_ordeal(days=max(args.days, 30), model=args.model, dry_run=args.dry_run)
+        print()
+
+    # Aggregation Dream 是 LLM-heavy 儀式；只在顯式指定 --aggregate 或 --all 時執行
+    if args.aggregate or (run_all and args.all):
+        print("═══ VI. Aggregation Dream ═══")
+        aggregation_dream(model=args.agg_model, dry_run=args.dry_run,
+                          max_facts=args.max_facts)
         print()
 
     if run_all:

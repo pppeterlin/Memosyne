@@ -551,8 +551,8 @@ Memory title: {title}
 
 def _call_patrol_llm(file_path: str, title: str, original_text: str,
                      enrichment: dict, model: str) -> dict:
-    """呼叫 LLM 審計一筆 enrichment。"""
-    import ollama
+    """呼叫 LLM 審計一筆 enrichment（Ollama / OpenRouter）。"""
+    from llm_client import chat_text
 
     # 截斷過長內容
     text_trimmed = original_text[:3000]
@@ -568,14 +568,12 @@ def _call_patrol_llm(file_path: str, title: str, original_text: str,
         enrichment_json=enrichment_json,
     )
 
-    resp = ollama.chat(
+    raw = chat_text(
         model=model,
         messages=[{"role": "user", "content": prompt}],
-        stream=False,
+        temperature=0,
         think=False,
-        options={"temperature": 0},
-    )
-    raw = resp["message"]["content"].strip()
+    ).strip()
 
     start = raw.find("{")
     end   = raw.rfind("}")

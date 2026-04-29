@@ -1,0 +1,47 @@
+# Augury Golden Set — 人工標註的檢索真值（Phase 1.1 + Phase 5.3）
+#
+# 用法：
+#   1. 複製一份為 golden_set.yaml（該檔已 gitignore）
+#   2. 填入本地私有評估查詢 + 期望命中 path（依繆思分組）
+#   3. 跑 retrieval_eval.py --golden-set golden_set.yaml
+#      → 報告會新增一節「Augury（人工）」與 Eternal Mirror 並列對照
+#
+# 注意：
+#   - 本模板必須只放 synthetic 範例。
+#   - 私有 golden_set.yaml 可在本機使用真實記憶，但不得提交。
+#   - 公開文檔與 committed examples 遵守 workspace AGENTS.md 的隱私規範。
+#
+# Schema：
+#   每位繆思 5–10 題；每題必填 query + expected_paths（1 個或多個可接受命中）
+#   選填：tags（分類）、notes（設計意圖）
+
+Clio:           # 歷史（30_Journal）
+  - query: "2026 年初的 sample journal 記錄了什麼心情"
+    expected_paths:
+      - "30_Journal/2026/sample_journal.md"
+    tags: [synthetic, journal, emotion]
+    notes: "測試日記情緒類語境召回"
+
+Calliope:       # 對話（20_AI_Chats）
+  - query: "sample chat 裡討論了哪些 RAG 架構取捨"
+    expected_paths:
+      - "20_AI_Chats/Synthetic/sample_chat.md"
+    tags: [synthetic, technical, chat]
+
+Urania:         # 知識（50_Knowledge）
+  - query: "sample knowledge note 如何解釋 ACT-R 衰減公式"
+    expected_paths:
+      - "50_Knowledge/sample_actr.md"
+    tags: [synthetic, knowledge]
+
+Polyhymnia:     # Profile（10_Profile）
+  - query: "sample profile 裡記錄了什麼互動偏好"
+    expected_paths:
+      - "10_Profile/sample_preferences.md"
+    tags: [synthetic, profile]
+
+Terpsichore:    # 行動（40_Projects）
+  - query: "sample project 的 v0.2 里程碑有哪些"
+    expected_paths:
+      - "40_Projects/sample_project.md"
+    tags: [synthetic, projects]
