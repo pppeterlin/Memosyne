@@ -640,6 +640,8 @@ def _normalize_person_name(name: str) -> str:
 
 def _embed_names(names: list[str]) -> dict[str, list[float]]:
     """用 sentence-transformers 為人名產生 embedding。"""
+    from model_env import configure_hf_runtime
+    configure_hf_runtime()
     from sentence_transformers import SentenceTransformer
 
     model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")

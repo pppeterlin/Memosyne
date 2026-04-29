@@ -237,6 +237,8 @@ def _load_centroids() -> dict[str, list[float] | None]:
 
 def _embed(text: str) -> list[float]:
     """計算單一 query 的 embedding（沿用 vectorize 的模型）。"""
+    from model_env import configure_hf_runtime
+    configure_hf_runtime()
     from sentence_transformers import SentenceTransformer
     from vectorize import EMBED_MODEL
     # cache model instance

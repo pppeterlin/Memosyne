@@ -34,6 +34,8 @@ import pickle
 import re
 from pathlib import Path
 
+from model_env import configure_hf_runtime
+
 BASE         = Path(__file__).parent.parent
 CHROMA_DIR   = Path(__file__).parent / "chroma_db"
 BM25_PATH    = Path(__file__).parent / "bm25_index.pkl"
@@ -43,6 +45,8 @@ EMBED_MODEL  = "paraphrase-multilingual-MiniLM-L12-v2"
 COLLECTION   = "personal_brain"
 MIN_PARA_LEN = 25   # 少於此字數的段落略過（通常是標題殘留）
 CTX_MODEL    = "gemma3:4b"  # Contextual notes 用小模型，省 tokens
+
+configure_hf_runtime()
 
 
 # ─── ChromaDB 初始化 ─────────────────────────────────────────
