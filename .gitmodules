@@ -1,0 +1,4 @@
+[submodule "Personal_Brain_DB/_vault"]
+	path = Personal_Brain_DB/_vault
+	url = git@github.com:pppeterlin/Memosyne-private.git
+	branch = main

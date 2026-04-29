@@ -1,11 +1,17 @@
 # ══════════════════════════════════════════
-#  個人記憶（所有內容都不進 git）
+#  秘鑰與憑證（絕對不進 git）
 # ══════════════════════════════════════════
-Personal_Brain_DB/10_Profile/
-Personal_Brain_DB/20_AI_Chats/
-Personal_Brain_DB/30_Journal/
-Personal_Brain_DB/40_Projects/
-Personal_Brain_DB/50_Knowledge/
+openrouter-key
+openrouter.py
+ANTHROPIC_API_KEY
+*.key
+.env
+.env.*
+
+# ══════════════════════════════════════════
+#  個人記憶 — 2026-04-23 起改由 Personal_Brain_DB/_vault submodule 追蹤
+#  原路徑 10_Profile ~ 50_Knowledge 現為 symlink 指向 _vault/，主 repo 只記 symlink
+# ══════════════════════════════════════════
 
 # ── 原始資料來源 ──
 gemini\ chat/
@@ -25,22 +31,25 @@ spring/*.txt
 # 向量資料庫
 Personal_Brain_DB/00_System/chroma_db/
 
+# Aletheia 私有狀態（log + snapshot + reembed queue）
+Personal_Brain_DB/00_System/aletheia_log.jsonl
+Personal_Brain_DB/00_System/aletheia_backup/
+Personal_Brain_DB/00_System/aletheia_pending_reembed.json
+
+# Augury golden_set — 包含真實查詢，保留私有
+Personal_Brain_DB/00_System/benchmark/golden_set.yaml
+
 # FlashRank / HuggingFace 模型快取
 Personal_Brain_DB/00_System/flashrank_cache/
 
-# 自動生成的全文索引
-Personal_Brain_DB/00_System/index.json
-Personal_Brain_DB/00_System/bm25_index.pkl
-Personal_Brain_DB/00_System/tapestry.json
-Personal_Brain_DB/00_System/tapestry_db
-Personal_Brain_DB/00_System/tapestry_db/
-
-# Augury 審計報告（含個人記憶內容）
-Personal_Brain_DB/00_System/augury_reports/
-
-# Chronicle（ACT-R 存取紀錄）+ Contextual cache
-Personal_Brain_DB/00_System/chronicle.db
-Personal_Brain_DB/00_System/contextual_cache.json
+# 以下檔案 2026-04-23 後改由 _vault submodule 管理；00_System/ 下保留 symlink 作為 shim
+# （symlink 本身會被追蹤，指向 ../_vault/；私有內容在 private repo）
+# - index.json, bm25_index.pkl, muse_centroids.json（索引 / centroid）
+# - tapestry.json, tapestry_db（圖譜）
+# - hyqe_cache.json, contextual_cache.json（LLM 產出快取）
+# - chronicle.db（存取紀錄）
+# - augury_reports/（Augury 審計）
+# - benchmark/reports/（Eternal Mirror 評估報告）
 
 # ══════════════════════════════════════════
 #  Python 暫存
