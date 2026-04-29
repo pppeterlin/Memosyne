@@ -61,7 +61,8 @@ Personal_Brain_DB/（The Vault）
 ### 環境設定
 
 ```bash
-workon personal-memory   # virtualenvwrapper
+python -m venv .venv
+source .venv/bin/activate
 pip install -r Personal_Brain_DB/00_System/requirements.txt
 ```
 
@@ -137,6 +138,8 @@ pip install -e .
 memosyne health
 ```
 
+日常操作與 troubleshooting 見 [docs/operations.md](docs/operations.md)。
+
 ---
 
 ## MCP 設定（Claude Desktop / Cursor）
@@ -147,7 +150,7 @@ memosyne health
     "personal-brain": {
       "command": "/path/to/your/venv/bin/python",
       "args": [
-        "/path/to/personal-memory/Personal_Brain_DB/00_System/mcp_server.py"
+        "/path/to/memosyne/Personal_Brain_DB/00_System/mcp_server.py"
       ]
     }
   }
@@ -237,7 +240,7 @@ python3 Personal_Brain_DB/00_System/slumber.py --forget --dry-run
 ## 目錄結構
 
 ```
-personal-memory/
+memosyne/
 ├── Personal_Brain_DB/
 │   ├── 00_System/          ← 所有腳本、索引、資料庫
 │   ├── 10_Profile/         ← 個人 Profile（不進 git）
