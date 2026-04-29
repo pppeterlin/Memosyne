@@ -3,7 +3,7 @@
 > 持久化追蹤檔案。每次 commit 後請更新此檔狀態。
 > 詳細設計與依據：[優化方案_索引與保存管理.md](優化方案_索引與保存管理.md)
 > 分支：`v0.2`（將釋出為 v0.2.0；master 保留為 v0.1.0）
-> 最後更新：2026-04-23（Phase 5.1/5.2/5.4 Eternal Mirror 落地；Phase 6.1/6.2 Aletheia skeleton + MCP）
+> 最後更新：2026-04-29（v0.2 freeze 收口：roadmap 中文化、workspace 文檔隱私規範、Phase 5.3/5.5 狀態同步）
 
 ## 狀態圖例
 - [ ] pending
@@ -26,11 +26,12 @@
 
 ### 1.1 The Augury Benchmark（**最優先**）
 - [x] 建立 `Personal_Brain_DB/00_System/benchmark/` 目錄
-- [x] 實作 `augury_benchmark.py`（Recall@K / MRR / P@5 / Full Recall / Abstention / 自動 diff 上一份報告）
-- [x] `golden_set.yaml` 模板（含各繆思範例題）
+- [x] 由 `retrieval_eval.py --golden-set` 承接 Augury 人工 golden_set 評估
+- [x] `golden_set.example.yaml` 模板（含各繆思 synthetic 範例題）
 - [x] `benchmark/README.md` 使用說明
-- [ ] **[使用者任務]** 用真實記憶填寫 `golden_set.yaml`，每位繆思 5–10 題
-- [ ] **[使用者任務]** 跑第一次 baseline：`python3 augury_benchmark.py`
+- [ ] **[使用者任務]** 在本機私有 `golden_set.yaml` 填寫評估題，每位繆思 5–10 題
+  > committed template 必須只使用 synthetic examples；私有真實題目不得提交。
+- [ ] **[使用者任務]** 跑第一次 baseline：`python3 retrieval_eval.py --config full --hygiene --golden-set golden_set.yaml`
 - [ ] **[使用者任務]** commit baseline 報告作為對照基準
 
 ### 1.2 The Naming Rite（實體正規化）
@@ -210,16 +211,20 @@
 - [x] 設定回歸閾值：REGRESSION_THRESHOLDS（2%），`--fail-on-regression` 退出碼 1
 - [ ] **[使用者任務]** 每次優化 commit 前後各跑一次，報告附在 commit message
 
-### 5.3 與 Augury 互補
-- [ ] `retrieval_eval.py` 支援讀 `golden_set.yaml` 做混合評估
-- [ ] 統一報告格式：Eternal Mirror（自監督）+ Augury（人工）雙欄對照
+### 5.3 與 Augury 互補 → **已實作**
+- [x] `retrieval_eval.py` 支援讀 `golden_set.yaml` 做混合評估
+- [x] 統一報告格式：Eternal Mirror（自監督）+ Augury（人工）雙欄對照
 - [ ] Slumber `--stats` 加入最近一次評估摘要
 
 ### 5.4 評估數據的衛生 → **已實作（commit 6f4dd28）**
 - [x] 避免資料洩漏：`--hygiene` 旗標將 `view=hyqe` 從 dense 檢索結果排除
   - 實作：`search(exclude_views=["hyqe"])` 傳入 Chroma `$ne` 過濾
   - 實測洩漏幅度僅約 2%，框架可信
-- [ ] 抽樣策略：依 chunk 長度/繆思分層抽樣（deferred to Phase 5.5）
+
+### 5.5 分層抽樣 → **已實作（commit 77f01db）**
+- [x] 抽樣策略：依 chunk 長度/繆思分層抽樣
+- [x] `retrieval_eval.py --stratify-by {none,muse,length,both}`
+- [x] 報告輸出分問題長度 bucket 指標
 
 ---
 
