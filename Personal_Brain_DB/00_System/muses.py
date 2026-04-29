@@ -38,7 +38,17 @@ import json
 from pathlib import Path
 from typing import Callable
 
-CENTROIDS_PATH = Path(__file__).parent / "muse_centroids.json"
+try:
+    from artifacts import artifact_path, ensure_parent
+except ImportError:
+    def artifact_path(name: str) -> Path:
+        mapping = {"muse_centroids": "muse_centroids.json"}
+        return Path(__file__).parent / mapping.get(name, name)
+
+    def ensure_parent(path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+CENTROIDS_PATH = artifact_path("muse_centroids")
 
 # ─── 繆思定義 ─────────────────────────────────────────────────
 #
@@ -206,6 +216,7 @@ def build_centroids(min_seeds: int = 3, verbose: bool = True) -> dict[str, list[
         "counts": counts,
         "centroids": centroids,
     }
+    ensure_parent(CENTROIDS_PATH)
     CENTROIDS_PATH.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",

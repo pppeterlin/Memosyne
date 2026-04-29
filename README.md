@@ -99,7 +99,7 @@ Notes are cached in `contextual_cache.json` — LLM is never called twice for th
 
 ### The Chronicle of Mneme — ACT-R Reranking
 
-Every search and file read is logged. Results are reranked using the ACT-R base-level activation formula:
+Every search and file read is logged. The append-only source log is `chronicle.jsonl`; `chronicle.db` is a derived SQLite cache used for fast ACT-R scoring. Results are reranked using the ACT-R base-level activation formula:
 
 ```
 A_i = ln( Σ_{k=1}^{n} t_k^{-0.5} )
@@ -110,6 +110,8 @@ Where *n* is access count and *t_k* is hours since the *k*-th access. Memories y
 ```bash
 python3 Personal_Brain_DB/00_System/mneme_weight.py --stats
 python3 Personal_Brain_DB/00_System/mneme_weight.py --top 10
+python3 Personal_Brain_DB/00_System/mneme_weight.py --export-jsonl --replace-jsonl
+python3 Personal_Brain_DB/00_System/mneme_weight.py --rebuild-db-from-jsonl
 ```
 
 ### The Tapestry — Knowledge Graph

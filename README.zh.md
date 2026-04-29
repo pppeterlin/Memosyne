@@ -154,6 +154,7 @@ python3 Personal_Brain_DB/00_System/vectorize.py --rebuild
 ### ACT-R 認知衰減 — The Chronicle of Mneme
 
 基於認知科學的記憶重排：近期且頻繁使用的記憶排名更高。
+`chronicle.jsonl` 是 append-only 真相來源，`chronicle.db` 是可由 JSONL 重建的 SQLite 查詢快取。
 
 ```
 A_i = ln(Σ_{k=1}^{n} t_k^{-0.5})
@@ -162,6 +163,8 @@ A_i = ln(Σ_{k=1}^{n} t_k^{-0.5})
 ```bash
 python3 Personal_Brain_DB/00_System/mneme_weight.py --stats
 python3 Personal_Brain_DB/00_System/mneme_weight.py --top 10
+python3 Personal_Brain_DB/00_System/mneme_weight.py --export-jsonl --replace-jsonl
+python3 Personal_Brain_DB/00_System/mneme_weight.py --rebuild-db-from-jsonl
 ```
 
 ### Tapestry — 知識圖譜
