@@ -261,6 +261,17 @@ def cmd_search(ns: argparse.Namespace) -> int:
 
 
 def cmd_mcp(ns: argparse.Namespace) -> int:
+    if ns.print_config:
+        config = {
+            "mcpServers": {
+                ns.name: {
+                    "command": sys.executable,
+                    "args": [str(_system_script("mcp_server.py"))],
+                }
+            }
+        }
+        print(json.dumps(config, ensure_ascii=False, indent=2))
+        return 0
     if ns.check:
         sys.path.insert(0, str(SYSTEM_DIR))
         try:
@@ -302,6 +313,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     mcp = subparsers.add_parser("mcp", help="run or check the MCP server")
     mcp.add_argument("--check", action="store_true", help="import-check the MCP server without starting it")
+    mcp.add_argument("--print-config", action="store_true", help="print an MCP client config snippet")
+    mcp.add_argument("--name", default="memosyne", help="MCP server name for --print-config")
     mcp.set_defaults(func=cmd_mcp)
 
     return parser

@@ -38,6 +38,9 @@ python memosyne.py rebuild
 # Check MCP importability
 python memosyne.py mcp --check
 
+# Print MCP client config
+python memosyne.py mcp --print-config
+
 # Chronicle stats
 python memosyne.py chronicle --stats
 
@@ -46,6 +49,11 @@ python memosyne.py slumber --stats
 ```
 
 The root `memosyne.py` CLI is intentionally a thin v0.3 wrapper over existing scripts. It stabilizes the command surface without forcing a large internal refactor.
+
+Related docs:
+
+- [Configuration](configuration.md)
+- [MCP setup](mcp.md)
 
 ## Health Checks
 
