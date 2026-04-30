@@ -139,7 +139,7 @@ memosyne health
 ```
 
 日常操作與 troubleshooting 見 [docs/operations.md](docs/operations.md)。
-設定說明見 [docs/configuration.md](docs/configuration.md)，MCP 設定見 [docs/mcp.md](docs/mcp.md)。
+設定說明見 [docs/configuration.md](docs/configuration.md)，MCP 設定見 [docs/mcp.md](docs/mcp.md)，修正流程見 [docs/correction.md](docs/correction.md)，評估流程見 [docs/evaluation.md](docs/evaluation.md)。
 
 ---
 
