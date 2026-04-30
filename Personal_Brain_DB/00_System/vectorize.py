@@ -1376,6 +1376,8 @@ def main():
     parser.add_argument("--query",         type=str, default="",  help="搜尋測試")
     parser.add_argument("--top",           type=int, default=5,   help="回傳前 N 筆")
     parser.add_argument("--type",          type=str, default="",  help="篩選類型：note/chat/bio")
+    parser.add_argument("--no-record-access", action="store_true",
+                        help="搜尋測試不寫入 Chronicle access log（適合 validation / benchmark）")
     parser.add_argument("--contextualize", action="store_true",
                         help="The Illumination — 生成語境化段落摘要（Contextual Retrieval）")
     parser.add_argument("--hyqe",          action="store_true",
@@ -1385,7 +1387,8 @@ def main():
     args = parser.parse_args()
 
     if args.query:
-        results = search(args.query, args.top, args.type)
+        results = search(args.query, args.top, args.type,
+                         record_access=not args.no_record_access)
         if not results:
             print("The waters are still. No echoes found.")
             return

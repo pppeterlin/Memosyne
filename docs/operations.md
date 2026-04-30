@@ -32,6 +32,9 @@ python memosyne.py ingest
 # Search
 python memosyne.py search "測試查詢" --top 5
 
+# Smoke-test search without changing Chronicle / ACT-R state
+python memosyne.py search "測試查詢" --top 5 --no-record-access
+
 # Rebuild retrieval indexes
 python memosyne.py rebuild
 
