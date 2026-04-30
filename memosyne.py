@@ -257,6 +257,8 @@ def cmd_search(ns: argparse.Namespace) -> int:
     args = ["--query", ns.query, "--top", str(ns.top)]
     if ns.type:
         args.extend(["--type", ns.type])
+    if ns.no_record_access:
+        args.append("--no-record-access")
     return _run_script("vectorize.py", args)
 
 
@@ -302,6 +304,11 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("query")
     search.add_argument("--top", type=int, default=5)
     search.add_argument("--type", default="")
+    search.add_argument(
+        "--no-record-access",
+        action="store_true",
+        help="do not write this search to the Chronicle access log",
+    )
     search.set_defaults(func=cmd_search)
 
     _add_passthrough(subparsers, "ingest", "run The Spring Ritual", "ingest.py")

@@ -125,9 +125,13 @@ For v0.3 operational-only changes, at minimum run:
 
 ```bash
 memosyne health
+memosyne search "測試查詢" --no-record-access
 memosyne mcp --check
 memosyne chronicle --stats
 ```
+
+Use `--no-record-access` for smoke-test queries so validation does not alter
+Chronicle state or ACT-R reranking inputs before an Eternal Mirror comparison.
 
 If retrieval code changed, also run Eternal Mirror. If user-facing retrieval behavior changed, run Augury with a private golden set.
 
