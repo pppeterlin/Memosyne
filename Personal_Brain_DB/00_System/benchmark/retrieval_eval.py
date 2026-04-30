@@ -422,7 +422,7 @@ def main() -> None:
     ap.add_argument("--config", default="baseline", choices=list(CONFIGS.keys()))
     ap.add_argument("--diff", action="store_true", help="與上一份同 config 報告比對")
     ap.add_argument("--fail-on-regression", action="store_true",
-                    help="--diff 搭配：任一指標跌幅 >2% 時 exit 1（CI 用）")
+                    help="--diff 搭配：任一指標跌幅 >2%% 時 exit 1（CI 用）")
     ap.add_argument("--hygiene", action="store_true",
                     help="Eval hygiene：排除 hyqe view，避免自我命中（資料洩漏）")
     ap.add_argument("--stratify-by", default="none",
