@@ -262,7 +262,7 @@ memosyne health
 ```
 
 Daily operations and troubleshooting are documented in [docs/operations.md](docs/operations.md).
-Configuration is documented in [docs/configuration.md](docs/configuration.md), and MCP setup is documented in [docs/mcp.md](docs/mcp.md).
+Configuration is documented in [docs/configuration.md](docs/configuration.md), MCP setup in [docs/mcp.md](docs/mcp.md), correction flow in [docs/correction.md](docs/correction.md), and evaluation in [docs/evaluation.md](docs/evaluation.md).
 
 ---
 

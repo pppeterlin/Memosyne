@@ -54,6 +54,8 @@ Related docs:
 
 - [Configuration](configuration.md)
 - [MCP setup](mcp.md)
+- [Correction flow](correction.md)
+- [Evaluation](evaluation.md)
 
 ## Health Checks
 
