@@ -1,0 +1,18 @@
+[paths]
+vault = "Personal_Brain_DB/_vault"
+spring = "spring"
+system = "Personal_Brain_DB/00_System"
+
+[models]
+embedding = "paraphrase-multilingual-MiniLM-L12-v2"
+enrichment = "gemma4:26b"
+contextual = "gemma3:4b"
+chat_local = "gemma4:26b"
+
+[retrieval]
+default_top_k = 5
+auto_route = true
+muse_mode = "soft"
+
+[mcp]
+server_name = "memosyne"
