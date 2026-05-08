@@ -78,6 +78,23 @@ Mnemosyne（泰坦神，記憶女神）
 
 ---
 
+## 開發環境
+
+本專案的本地開發、CLI 執行、health check、MCP check 與驗證指令，應使用專案專用 Python virtualenv，不要用裸 `python3` 的結果判斷專案環境是否正常。
+
+公開文檔只記錄通用要求：
+
+```bash
+python --version   # Python 3.10+
+python memosyne.py health
+```
+
+本機開發者可在不進 git 的 `AGENTS.local.md` 記錄個人環境路徑、virtualenv 名稱、alias 與私有操作習慣。若該檔存在，agent 應優先讀取並遵守；但不得把其中內容複製到公開文檔。
+
+任何含有個人路徑、私有 virtualenv 名稱、API key 位置、local machine 設定的內容，都應放在 gitignored local override，而不是 `README`、`docs/`、`AGENTS.md` 或 `CLAUDE.md`。
+
+---
+
 ## 文檔與示例資料隱私規範
 
 這是 workspace-level 規範，適用於 README、roadmap、docs、sample vault、benchmark 範例、CLI 範例與公開說明。

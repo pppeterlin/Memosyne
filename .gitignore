@@ -6,6 +6,10 @@ openrouter.py
 ANTHROPIC_API_KEY
 *.key
 .env
+
+# Local agent/developer overrides (private machine-specific instructions)
+AGENTS.local.md
+CLAUDE.local.md
 .env.*
 
 # ══════════════════════════════════════════

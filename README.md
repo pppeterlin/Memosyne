@@ -99,7 +99,7 @@ Notes are cached in `contextual_cache.json` — LLM is never called twice for th
 
 ### The Chronicle of Mneme — ACT-R Reranking
 
-Every search and file read is logged. Results are reranked using the ACT-R base-level activation formula:
+Every search and file read is logged. The append-only source log is `chronicle.jsonl`; `chronicle.db` is a derived SQLite cache used for fast ACT-R scoring. Results are reranked using the ACT-R base-level activation formula:
 
 ```
 A_i = ln( Σ_{k=1}^{n} t_k^{-0.5} )
@@ -110,6 +110,8 @@ Where *n* is access count and *t_k* is hours since the *k*-th access. Memories y
 ```bash
 python3 Personal_Brain_DB/00_System/mneme_weight.py --stats
 python3 Personal_Brain_DB/00_System/mneme_weight.py --top 10
+python3 Personal_Brain_DB/00_System/mneme_weight.py --export-jsonl --replace-jsonl
+python3 Personal_Brain_DB/00_System/mneme_weight.py --rebuild-db-from-jsonl
 ```
 
 ### The Tapestry — Knowledge Graph
@@ -150,8 +152,10 @@ python3 Personal_Brain_DB/00_System/slumber.py --forget --dry-run
 
 ```bash
 # Clone and set up environment
-git clone https://github.com/yourname/personal-memory
-cd personal-memory
+git clone https://github.com/yourname/memosyne
+cd memosyne
+python -m venv .venv
+source .venv/bin/activate
 pip install -r Personal_Brain_DB/00_System/requirements.txt
 ```
 
@@ -173,6 +177,10 @@ python3 Personal_Brain_DB/00_System/ingest.py --rebuild     # full index rebuild
 ### Search your memories
 
 ```bash
+# v0.3 command surface
+python3 memosyne.py health
+python3 memosyne.py search "happiest days in 2025" --top 5
+
 # Interactive search REPL
 python3 Personal_Brain_DB/00_System/search.py
 
@@ -195,7 +203,7 @@ Add to your MCP config (`~/.claude/claude_desktop_config.json` or equivalent):
     "personal-brain": {
       "command": "/path/to/your/venv/bin/python",
       "args": [
-        "/path/to/personal-memory/Personal_Brain_DB/00_System/mcp_server.py"
+        "/path/to/memosyne/Personal_Brain_DB/00_System/mcp_server.py"
       ]
     }
   }
@@ -230,6 +238,31 @@ Add to your MCP config (`~/.claude/claude_desktop_config.json` or equivalent):
 | `mneme_weight.py` | ACT-R access log and cognitive decay | `--stats` `--top` `--score` |
 | `slumber.py` | Memory consolidation | `--reflect` `--hebbian` `--forget` `--stats` |
 | `watch.py` | Filesystem watcher daemon | — |
+
+### v0.3 Command Surface
+
+The v0.3 CLI is a thin wrapper over the existing scripts:
+
+```bash
+python3 memosyne.py init
+python3 memosyne.py ingest
+python3 memosyne.py search "sample query"
+python3 memosyne.py rebuild
+python3 memosyne.py health
+python3 memosyne.py mcp --check
+python3 memosyne.py slumber --stats
+python3 memosyne.py chronicle --stats
+```
+
+After editable install, the same commands are available as `memosyne ...`:
+
+```bash
+pip install -e .
+memosyne health
+```
+
+Daily operations and troubleshooting are documented in [docs/operations.md](docs/operations.md).
+Configuration is documented in [docs/configuration.md](docs/configuration.md), MCP setup in [docs/mcp.md](docs/mcp.md), correction flow in [docs/correction.md](docs/correction.md), and evaluation in [docs/evaluation.md](docs/evaluation.md).
 
 ---
 
@@ -288,7 +321,7 @@ entities:
 ## Repository Structure
 
 ```
-personal-memory/
+memosyne/
 ├── Personal_Brain_DB/
 │   ├── 00_System/      ← all scripts, indices, databases
 │   ├── 10_Profile/     ← your profile (gitignored)
