@@ -121,17 +121,19 @@ vault 中沒有任何兄弟姐妹資訊。預期行為：
 ## 在 Sample Vault 上跑 Memosyne
 
 ```bash
-# 用 sample 初始化（不動到你的私有 vault）
-MEMOSYNE_VAULT_DIR=sample_vault python memosyne.py rebuild
+# 兩個 env var 一起設：資料來源 + 衍生 artifacts 寫到哪
+export MEMOSYNE_VAULT_DIR=$PWD/sample_vault
+export MEMOSYNE_ARTIFACT_DIR=$PWD/sample_vault/_artifacts
 
-# 健檢
-MEMOSYNE_VAULT_DIR=sample_vault python memosyne.py health
-
-# 搜尋
-MEMOSYNE_VAULT_DIR=sample_vault python memosyne.py search "Aiko"
+# 健檢（衍生 artifacts 一開始全是 fail，正常）
+python memosyne.py rebuild
+python memosyne.py health
+python memosyne.py search "Aiko"
 ```
 
-> **注意**：`MEMOSYNE_VAULT_DIR` 同時影響索引輸出位置。建議在 sample 模式下指向 `sample_vault/_artifacts/`（gitignored）以免污染 sample 目錄本身。
+> **注意**：`MEMOSYNE_VAULT_DIR` 切換的是 Memosyne 看的「資料根目錄」（包含 `10_Profile/` 等繆思資料夾的目錄）。`MEMOSYNE_ARTIFACT_DIR` 進一步把所有衍生 artifacts（ChromaDB、BM25 index、Tapestry graph、caches）導到指定路徑——sample 模式建議指向 `sample_vault/_artifacts/`（已 gitignored）以免與你的私有索引混在一起。
+>
+> 兩個 env var 都不設時，Memosyne 走預設的 `Personal_Brain_DB/` 路徑（含 symlink shim 與 `_vault` submodule）。
 
 ---
 

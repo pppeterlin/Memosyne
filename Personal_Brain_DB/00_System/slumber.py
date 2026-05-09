@@ -35,7 +35,8 @@ from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 
-BASE       = Path(__file__).parent.parent
+from artifacts import data_root
+BASE       = data_root()
 SYSTEM_DIR = Path(__file__).parent
 
 EXCLUDE_DIRS  = {"00_System"}

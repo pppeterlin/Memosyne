@@ -20,8 +20,9 @@ Claude Desktop 設定（~/.claude/claude_desktop_config.json）：
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 from model_env import configure_hf_runtime
+from artifacts import artifact_path, data_root
 
-BASE = Path(__file__).parent.parent
+BASE = data_root()
 sys_dir = Path(__file__).parent
 
 configure_hf_runtime()
@@ -33,7 +34,7 @@ def _get_collection():
     """懶載入 ChromaDB collection"""
     import chromadb
     from chromadb.utils import embedding_functions
-    CHROMA_DIR  = sys_dir / "chroma_db"
+    CHROMA_DIR  = artifact_path("chroma_db")
     EMBED_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
     client = chromadb.PersistentClient(path=str(CHROMA_DIR))
     ef = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=EMBED_MODEL)

@@ -39,8 +39,9 @@ from datetime import datetime
 from pathlib import Path
 
 SYSTEM_DIR = Path(__file__).resolve().parent
-BASE = SYSTEM_DIR.parent
 sys.path.insert(0, str(SYSTEM_DIR))
+from artifacts import data_root
+BASE = data_root()
 
 ALETHEIA_LOG = SYSTEM_DIR / "aletheia_log.jsonl"
 ALETHEIA_BACKUP_DIR = SYSTEM_DIR / "aletheia_backup"

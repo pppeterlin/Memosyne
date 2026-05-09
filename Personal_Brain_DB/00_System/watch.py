@@ -19,9 +19,11 @@ except ImportError:
     print("請先安裝 watchdog：pip install watchdog")
     sys.exit(1)
 
-BASE     = Path(__file__).parent.parent
-GEMINI_SRC = BASE.parent / "gemini chat"
-NOTES_SRC  = BASE.parent / "notes"
+from artifacts import data_root
+BASE     = data_root()
+REPO_ROOT  = Path(__file__).resolve().parent.parent.parent
+GEMINI_SRC = REPO_ROOT / "gemini chat"
+NOTES_SRC  = REPO_ROOT / "notes"
 SCRIPT     = Path(__file__).parent / "process_files.py"
 
 

@@ -167,14 +167,6 @@ def _collect_health_checks() -> list[HealthCheck]:
             "Install runtime deps: pip install -r Personal_Brain_DB/00_System/requirements.txt",
         ))
 
-    chroma_dir = SYSTEM_DIR / "chroma_db"
-    checks.append(_check(
-        True if _directory_has_entries(chroma_dir) else None,
-        "Chroma DB",
-        str(chroma_dir),
-        "Run: python memosyne.py rebuild",
-    ))
-
     for artifact in artifact_manifest():
         expected = artifact["key"] in {
             "chronicle_jsonl",
@@ -184,6 +176,7 @@ def _collect_health_checks() -> list[HealthCheck]:
             "hyqe_cache",
             "tapestry_db",
             "muse_centroids",
+            "chroma_db",
         }
         exists = bool(artifact["exists"])
         checks.append(_check(

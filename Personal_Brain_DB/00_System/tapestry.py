@@ -37,11 +37,14 @@ from pathlib import Path
 
 import kuzu
 try:
-    from artifacts import artifact_path
+    from artifacts import artifact_path, data_root
 except ImportError:
     def artifact_path(name: str) -> Path:
         mapping = {"tapestry_db": "tapestry_db"}
         return Path(__file__).parent / mapping.get(name, name)
+
+    def data_root() -> Path:
+        return Path(__file__).parent.parent
 
 # ─── Bi-temporal edge properties ─────────────────────────────
 # t_valid_start   : 關係在真實世界開始成立的時間（通常 = t_ingested）
@@ -59,7 +62,7 @@ _TEMPORAL_COLUMNS = [
     ("invalidated_by", "STRING"),
 ]
 
-BASE          = Path(__file__).parent.parent
+BASE          = data_root()
 TAPESTRY_DB   = artifact_path("tapestry_db").resolve()
 
 # ─── 資料庫初始化 ────────────────────────────────────────────
