@@ -135,6 +135,17 @@ python memosyne.py search "Aiko"
 >
 > 兩個 env var 都不設時，Memosyne 走預設的 `Personal_Brain_DB/` 路徑（含 symlink shim 與 `_vault` submodule）。
 
+### 驗證 MCP server 可用
+
+`tests/test_mcp_smoke.py` 在 sample_vault 的索引上跑一次 stdio 端對端測試：spawn `mcp_server.py`、initialize、`tools/list`、實際呼叫 `search_memory` 與 `get_memory_health`，沒有任何 LLM 呼叫，純離線。
+
+```bash
+# 需要先跑過上面的 rebuild 把 sample 索引建起來
+python tests/test_mcp_smoke.py
+```
+
+Pass 條件：14 個 tools 註冊成功、`search_memory("Aiko")` 結果含 sample_chat 命中、`get_memory_health` 有回內容。
+
 ---
 
 ## Evaluation Sample Set
