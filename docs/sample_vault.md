@@ -152,18 +152,16 @@ Pass 條件：14 個 tools 註冊成功、`search_memory("Aiko")` 結果含 samp
 
 `sample_vault/` 應搭配一組迷你 golden questions，路徑建議 `sample_vault/_eval/golden.yaml`。每題包含 question + expected source file。
 
-最小集合（v0.4 待補）：
-- "Aiko 是誰？" → `10_Profile/bio.md`
-- "Tokyo Slow Vol.2 出發日期？" → `40_Projects/tokyo_slow_v2.md`
-- "冷色為主的水彩配方？" → `50_Knowledge/watercolor_notes.md`
-- "Mira 對什麼食物過敏？" → `10_Profile/preferences.md`
-- "誰是青鳥咖啡的老闆？" → `30_Journal/2026/260112.md`
-- "Mira 的弟弟叫什麼？" → `<abstain>`（測試 negative query）
+已實作：[sample_vault/_eval/golden.yaml](../sample_vault/_eval/golden.yaml) 包含 5 題可回答的合成查詢，涵蓋 Polyhymnia / Terpsichore / Urania / Clio 四位繆思領域。
 
-跑法（待 v0.4 完成）：
 ```bash
-memosyne eval --sample
+# 假設 sample 索引已用上面的 rebuild 建好
+python memosyne.py eval --sample
 ```
+
+輸出包含 Recall@1 / Recall@5 / Recall@10 / MRR，以及每題的 hit rank。Sample 規模小、未經調校，預期 Recall@5 ≈ 1.00、MRR 落在 0.3 左右——指的是「正確檔案總在前 5 名內，但 top-1 不一定」。重點是這條 evaluation pipeline 在 sample 資料上跑得通，方便貢獻者驗證自己的修改沒有打壞檢索。
+
+> **抽象化查詢（如 "Mira 的弟弟叫什麼？"）** 因為沒有正確答案檔案，目前 metric 不支援，留待未來支援 abstention scoring 時補上。
 
 ---
 
