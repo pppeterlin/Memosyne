@@ -92,6 +92,18 @@ When opening a PR that touches files outside `00_System/`, run `git diff --stat 
 
 ---
 
+## Clean-Install Verification
+
+`tests/Dockerfile` builds a hermetic image that exercises the full install + verification path with no host caches, no private vault, and no preinstalled dependencies. A successful build means a fresh clone on a machine with only Docker and Python tooling can reach a healthy state.
+
+```bash
+docker build -f tests/Dockerfile -t memosyne-verify .
+```
+
+The Dockerfile runs `rebuild`, `eval --sample`, and the MCP smoke test as separate `RUN` steps, so a build failure points at the exact stage. First build downloads CPU-only PyTorch + the embedding model and takes ~10–30 minutes depending on network; subsequent builds reuse layer cache.
+
+---
+
 ## Release Checklist
 
 Before tagging a public release (or before publishing a v0.x branch upstream):
@@ -101,7 +113,7 @@ Before tagging a public release (or before publishing a v0.x branch upstream):
    git status
    git diff --stat origin/master...HEAD
    ```
-2. **Rebuild and verify on sample data.** All three of `health`, `eval --sample`, and `tests/test_mcp_smoke.py` must pass.
+2. **Rebuild and verify on sample data.** All three of `health`, `eval --sample`, and `tests/test_mcp_smoke.py` must pass on the host venv. If the release is a major one, also run the clean-install verification image above.
 3. **Run a secret scan over the full git history.** Memosyne uses [gitleaks](https://github.com/gitleaks/gitleaks).
    ```bash
    # History scan — this is the one that matters for OSS publication

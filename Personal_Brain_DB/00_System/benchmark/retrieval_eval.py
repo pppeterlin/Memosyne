@@ -35,8 +35,21 @@ from vectorize import search  # noqa: E402
 
 HYQE_CACHE = SYSTEM_DIR / "hyqe_cache.json"
 REPORTS_DIR = Path(__file__).resolve().parent / "reports"
-if not REPORTS_DIR.exists():
-    REPORTS_DIR.mkdir(parents=True)
+
+
+def _ensure_reports_dir() -> None:
+    """Create REPORTS_DIR lazily.
+
+    `reports/` is a symlink into the private _vault submodule on the host
+    layout. Resolving it at import time crashes when the submodule is not
+    present (e.g. in the public verify image, or any clean clone before
+    `git submodule update`). Defer to the moment a report is actually
+    written.
+    """
+    try:
+        REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    except FileExistsError:
+        pass
 
 
 # ── 資料類型推斷（path → 繆思領域） ─────────────────────────
@@ -237,6 +250,7 @@ def evaluate(samples: list[dict], config: dict, top_k: int) -> dict:
 
 # ── 報告 ──────────────────────────────────────────────────
 def write_report(metrics: dict, meta: dict) -> Path:
+    _ensure_reports_dir()
     ts = datetime.now().strftime("%Y%m%d_%H%M")
     stem = f"eval_{meta['config_name']}_{ts}"
     json_path = REPORTS_DIR / f"{stem}.json"
