@@ -20,11 +20,13 @@ import sys
 from pathlib import Path
 
 SYSTEM_DIR = Path(__file__).resolve().parent
-BASE       = SYSTEM_DIR.parent
 sys.path.insert(0, str(SYSTEM_DIR))
 
-from enrich import parse_frontmatter  # noqa: E402
-from llm_client import chat_text      # noqa: E402
+from artifacts import data_root        # noqa: E402
+from enrich import parse_frontmatter   # noqa: E402
+from llm_client import chat_text       # noqa: E402
+
+BASE       = data_root()
 
 CHAT_DIR = BASE / "20_AI_Chats"
 

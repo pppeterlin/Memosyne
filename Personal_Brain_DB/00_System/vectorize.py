@@ -36,7 +36,7 @@ from pathlib import Path
 
 from model_env import configure_hf_runtime
 try:
-    from artifacts import artifact_path, ensure_parent
+    from artifacts import artifact_path, data_root, ensure_parent
 except ImportError:
     def artifact_path(name: str) -> Path:
         mapping = {
@@ -49,8 +49,11 @@ except ImportError:
     def ensure_parent(path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
 
-BASE         = Path(__file__).parent.parent
-CHROMA_DIR   = Path(__file__).parent / "chroma_db"
+    def data_root() -> Path:
+        return Path(__file__).parent.parent
+
+BASE         = data_root()
+CHROMA_DIR   = artifact_path("chroma_db")
 BM25_PATH    = artifact_path("bm25_index")
 CTX_CACHE    = artifact_path("contextual_cache")
 HYQE_CACHE   = artifact_path("hyqe_cache")

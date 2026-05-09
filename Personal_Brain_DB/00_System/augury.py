@@ -40,7 +40,8 @@ for _var in ("NO_PROXY", "no_proxy"):
     if _bypass not in _cur:
         os.environ[_var] = f"{_cur},{_bypass}".lstrip(",")
 
-BASE       = Path(__file__).parent.parent
+from artifacts import data_root
+BASE       = data_root()
 SYSTEM_DIR = Path(__file__).parent
 REPORT_DIR = SYSTEM_DIR / "augury_reports"
 
