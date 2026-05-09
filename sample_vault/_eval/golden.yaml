@@ -1,0 +1,41 @@
+# Sample-vault golden set
+#
+# Five fully synthetic questions that have a single defensible source file
+# in sample_vault/. Used by `memosyne eval --sample` to verify retrieval
+# end-to-end on the public sample data.
+#
+# Schema (compatible with retrieval_eval.load_golden_set):
+#   <muse>:
+#     - query: "<natural language question>"
+#       expected_paths: ["<vault-relative file path>"]
+#       tags: [<optional category tags>]
+#
+# Notes
+# - Multiple expected_paths are allowed; any hit counts.
+# - Abstention queries (questions with no answer in the vault, e.g.
+#   "Mira's brother's name") are not yet supported by the metric and
+#   are omitted here.
+
+Polyhymnia:
+  - query: "Aiko 是誰？她跟 Mira 的關係？"
+    expected_paths: ["10_Profile/bio.md"]
+    tags: [person, profile]
+
+  - query: "Mira 對什麼食物過敏？"
+    expected_paths: ["10_Profile/preferences.md"]
+    tags: [profile, dietary]
+
+Terpsichore:
+  - query: "Tokyo Slow Vol.2 的出發日期是哪一天？"
+    expected_paths: ["40_Projects/tokyo_slow_v2.md"]
+    tags: [project, schedule]
+
+Urania:
+  - query: "冷色為主的城市場景水彩配方有哪些？"
+    expected_paths: ["50_Knowledge/watercolor_notes.md"]
+    tags: [knowledge, technique]
+
+Clio:
+  - query: "青鳥咖啡的老闆叫什麼名字？"
+    expected_paths: ["30_Journal/2026/260112.md"]
+    tags: [journal, person]
