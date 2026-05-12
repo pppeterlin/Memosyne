@@ -1111,6 +1111,37 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
     except ImportError:
         pass
 
+    # ── Backlink Boost（v0.5）──
+    # 結構性訊號：與多個 entity 相連的記憶獲得輕微乘性加權。
+    # 公式：score × (1 + BACKLINK_COEF × ln(1 + edge_count))
+    #   edge_count=0  → 因子 1.0（無加權）
+    #   edge_count=1  → 因子 ~1.035
+    #   edge_count=10 → 因子 ~1.12
+    #   edge_count=50 → 因子 ~1.20（飽和）
+    # 對數壓縮確保「廣連結」記憶不會壓垮「精確命中」記憶。
+    # 借鑑 gbrain hybrid.ts applyBacklinkBoost，但 edge_count 來自 Memory→Entity
+    # 出邊（而非 Page→Page 反向連結），因為 Memosyne 的圖譜以 entity 為中介節點。
+    # 環境變數：MEMOSYNE_BACKLINK_COEF=0 可關閉；預設 0.05。
+    import os as _os
+    _BACKLINK_COEF = float(_os.getenv("MEMOSYNE_BACKLINK_COEF", "0.05"))
+    if _BACKLINK_COEF > 0 and results:
+        try:
+            from tapestry import get_memory_edge_counts, TAPESTRY_DB as _TDB
+            if _TDB.exists():
+                paths = [r["path"] for r in results]
+                edge_counts = get_memory_edge_counts(paths)
+                if edge_counts:
+                    import math as _math
+                    for r in results:
+                        c = edge_counts.get(r["path"], 0)
+                        if c > 0:
+                            factor = 1.0 + _BACKLINK_COEF * _math.log(1 + c)
+                            r["score"] = round(r["score"] * factor, 4)
+                            r["edge_count"] = c
+                    results.sort(key=lambda x: x["score"], reverse=True)
+        except ImportError:
+            pass
+
     # ── The Invocation — 繆思路由器 ──
     # soft: 命中繆思領域的記憶 score × boost；hard: 過濾掉非命中
     active_muses: list[str] = list(muses) if muses else []
