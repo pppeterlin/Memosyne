@@ -10,7 +10,13 @@ ANTHROPIC_API_KEY
 # Local agent/developer overrides (private machine-specific instructions)
 AGENTS.local.md
 CLAUDE.local.md
+*.local.md
 .env.*
+
+# Vigil of Invariants — private allow-list for check_no_private_names
+# (sample_vault/_synthetic_entities.txt is the PUBLIC whitelist and should
+#  be committed; .private_terms is the per-machine private blocklist)
+.private_terms
 
 # ══════════════════════════════════════════
 #  個人記憶 — 2026-04-23 起改由 Personal_Brain_DB/_vault submodule 追蹤
