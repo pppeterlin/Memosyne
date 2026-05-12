@@ -108,6 +108,15 @@ ARTIFACTS: dict[str, Artifact] = {
         privacy="private",
         description="Muse routing centroids built from the private vault.",
     ),
+    "query_log_jsonl": Artifact(
+        key="query_log_jsonl",
+        relative_path="query_log.jsonl",
+        kind="append-only log",
+        privacy="private",
+        description="The Augury Replay capture log; opt-in via "
+                    "MEMOSYNE_CAPTURE_QUERIES=1 (default off).",
+        legacy_shim=False,
+    ),
 }
 
 

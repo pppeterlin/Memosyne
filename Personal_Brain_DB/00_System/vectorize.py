@@ -1236,6 +1236,21 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
         except ImportError:
             pass
 
+    # ── The Augury Replay — capture query for regression replay（v0.5）──
+    # opt-in；MEMOSYNE_CAPTURE_QUERIES=1 才寫。
+    # PII scrub + retrieval slug 列表 → NDJSON append-only。
+    if results:
+        try:
+            from query_log import record_query as _record_q
+            _record_q(
+                query=query,
+                retrieved_paths=[r["path"] for r in results],
+                top_k=top_k,
+                source="search",
+            )
+        except ImportError:
+            pass
+
     # ── Small-to-Big：展開 parent section ──
     if return_parent:
         results = _expand_parent_sections(results)
