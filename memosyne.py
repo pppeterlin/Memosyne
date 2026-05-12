@@ -354,6 +354,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_passthrough(subparsers, "chronicle", "inspect The Chronicle of Mneme", "mneme_weight.py")
     _add_passthrough(subparsers, "tapestry", "inspect or rebuild The Tapestry", "tapestry.py")
     _add_passthrough(subparsers, "correct", "run Aletheia correction tools", "aletheia.py")
+    _add_passthrough(
+        subparsers, "query-log",
+        "The Augury Replay — capture stats / export / replay (opt-in)",
+        "query_log.py",
+    )
 
     eval_p = subparsers.add_parser(
         "eval",
