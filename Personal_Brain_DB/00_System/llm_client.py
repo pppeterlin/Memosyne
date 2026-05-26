@@ -41,6 +41,17 @@ from typing import Iterator
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
+# Load .env at module import so any caller (slumber, enrich, etc.) sees the
+# keys without having to call load_dotenv themselves. Silent no-op if the
+# package or the .env file is absent.
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _ENV_FILE = _REPO_ROOT / ".env"
+    if _ENV_FILE.exists():
+        _load_dotenv(_ENV_FILE)
+except ImportError:
+    pass
+
 OPENROUTER_PREFIX = "openrouter:"
 OPENROUTER_BASE_URL_DEFAULT = "https://openrouter.ai/api/v1"
 
@@ -48,6 +59,12 @@ OPENROUTER_BASE_URL_DEFAULT = "https://openrouter.ai/api/v1"
 PROXY_PREFIX = "proxy:"
 PROXY_BASE_URL_DEFAULT = "http://localhost:3000/claude-kiro-oauth/v1"
 PROXY_KEY_FILE_DEFAULT = "ANTHROPIC_API_KEY"
+
+# DeepSeek 官方 API (OpenAI 相容)
+DEEPSEEK_PREFIX = "deepseek:"
+DEEPSEEK_BASE_URL_DEFAULT = "https://api.deepseek.com"
+# 觸發 reasoning_effort + extra_body thinking 的模型名稱（前綴匹配）
+DEEPSEEK_REASONING_MODELS = ("deepseek-v4-pro", "deepseek-reasoner")
 
 # OpenRouter 預設模型 + 降級鏈
 # 用 "openrouter:auto" 觸發；限流時自動依序重試下一個
@@ -67,18 +84,22 @@ RATE_LIMIT_BACKOFF_SECONDS = 3.0
 def _resolve_provider(model: str) -> tuple[str, str]:
     """
     回傳 (provider, normalized_model_name)
-    provider ∈ {"ollama", "openrouter", "proxy"}
+    provider ∈ {"ollama", "openrouter", "proxy", "deepseek"}
     """
     if model.startswith(OPENROUTER_PREFIX):
         return "openrouter", model[len(OPENROUTER_PREFIX):]
     if model.startswith(PROXY_PREFIX):
         return "proxy", model[len(PROXY_PREFIX):]
+    if model.startswith(DEEPSEEK_PREFIX):
+        return "deepseek", model[len(DEEPSEEK_PREFIX):]
 
     forced = os.environ.get("LLM_PROVIDER", "").strip().lower()
     if forced == "openrouter":
         return "openrouter", model
     if forced == "proxy":
         return "proxy", model
+    if forced == "deepseek":
+        return "deepseek", model
     if forced == "ollama":
         return "ollama", model
 
@@ -197,6 +218,68 @@ def _get_openrouter_client():
     return _openrouter_client
 
 
+# ─── DeepSeek（官方 API，OpenAI 相容）─────────────────────────
+
+_deepseek_client = None
+_deepseek_key_cache: str | None = None
+
+
+def _load_deepseek_key() -> str:
+    """
+    DeepSeek API key 載入順序：
+      1. DEEPSEEK_API_KEY（DeepSeek 官方文檔慣用名）
+      2. LLM_API_KEY（通用名，方便 .env 共用一把 key 切換 provider）
+    """
+    global _deepseek_key_cache
+    if _deepseek_key_cache:
+        return _deepseek_key_cache
+
+    key = (
+        os.environ.get("DEEPSEEK_API_KEY")
+        or os.environ.get("LLM_API_KEY")
+        or ""
+    ).strip()
+    if not key:
+        raise RuntimeError(
+            "DeepSeek API key 未設定。請在 .env 設 DEEPSEEK_API_KEY 或 "
+            "LLM_API_KEY，或匯出為環境變數。"
+        )
+    _deepseek_key_cache = key
+    return key
+
+
+def _get_deepseek_client():
+    global _deepseek_client
+    if _deepseek_client is None:
+        from openai import OpenAI
+        _deepseek_client = OpenAI(
+            base_url=os.environ.get("DEEPSEEK_BASE_URL", DEEPSEEK_BASE_URL_DEFAULT),
+            api_key=_load_deepseek_key(),
+        )
+    return _deepseek_client
+
+
+def _deepseek_chat(model: str, messages: list[dict], temperature: float, stream: bool):
+    """
+    DeepSeek 官方 API。對 v4-pro / reasoner 自動加上 reasoning_effort + thinking。
+    可用環境變數 MEMOSYNE_DEEPSEEK_EFFORT=low|medium|high 調整推理強度（預設 high）。
+    """
+    client = _get_deepseek_client()
+    kwargs: dict = {
+        "model":       model,
+        "messages":    messages,
+        "temperature": temperature,
+        "stream":      stream,
+    }
+    if any(model.startswith(prefix) for prefix in DEEPSEEK_REASONING_MODELS):
+        effort = os.environ.get("MEMOSYNE_DEEPSEEK_EFFORT", "high").strip().lower()
+        if effort not in {"low", "medium", "high"}:
+            effort = "high"
+        kwargs["reasoning_effort"] = effort
+        kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+    return client.chat.completions.create(**kwargs)
+
+
 def _ollama_chat(model: str, messages: list[dict], temperature: float,
                  think: bool, stream: bool):
     client = _get_ollama()
@@ -310,6 +393,10 @@ def chat_text(
         resp = _proxy_chat(model_name, messages, temperature, stream=False)
         return resp.choices[0].message.content or ""
 
+    if provider == "deepseek":
+        resp = _deepseek_chat(model_name, messages, temperature, stream=False)
+        return resp.choices[0].message.content or ""
+
     resp = _ollama_chat(model_name, messages, temperature, think=think, stream=False)
     return resp["message"]["content"]
 
@@ -328,12 +415,14 @@ def chat_stream(
     """
     provider, model_name = _resolve_provider(model)
 
-    if provider in ("openrouter", "proxy"):
+    if provider in ("openrouter", "proxy", "deepseek"):
         if provider == "openrouter":
             chain = _resolve_openrouter_chain(model_name)
             stream = _openrouter_call_with_fallback(chain, messages, temperature, stream=True)
-        else:
+        elif provider == "proxy":
             stream = _proxy_chat(model_name, messages, temperature, stream=True)
+        else:
+            stream = _deepseek_chat(model_name, messages, temperature, stream=True)
         for chunk in stream:
             if not chunk.choices:
                 continue
