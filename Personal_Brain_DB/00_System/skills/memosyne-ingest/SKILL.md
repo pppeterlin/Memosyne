@@ -59,10 +59,13 @@ and the Tapestry graph. `memosyne health` confirms everything wired up.
 
 ## 3. Source-specific notes
 
-- **Gemini exports**: filename hash is the conversation id. The same thread
-  exported twice currently silently skips — v0.5 still has the "no-dedup"
-  behavior; v0.6 will introduce turn-level diffing. For now, if the user
-  wants to update an existing conversation, ask before overwriting.
+- **Gemini exports** (v0.6+): filename hash is the conversation id.
+  Same content re-imported = `skipped_same` (no-op). Continuation
+  (same file with appended turns) = turn-aware **update**: uuid
+  preserved, only new turns added to the ledger, vector chunks
+  refreshed. No more silent drops. If the body **diverges** in a way
+  that isn't a clean continuation (e.g. edited earlier turns), ingest
+  warns + leaves the spring source in place for manual triage.
 - **Journal `.txt` / `.md`**: filename `YYMMDD_topic.md` is the convention.
   Frontmatter optional — `ingest.py` synthesizes one if missing.
 - **`.pages` files**: extracted via `_extract_pages_text`. macOS only.
@@ -92,8 +95,13 @@ build — run `memosyne rebuild` and re-test.
   on unenriched files).
 - **`spring/` original not archived** → check `spring/_processed/<YYYY-MM>/`;
   if missing, the ingest failed partway. Inspect logs.
-- **Same filename, different content** → currently silently skipped, then
-  archived. v0.5 limitation; warn the user explicitly when this happens.
+- **Same filename, different content** (v0.6+): three sub-cases:
+  - Gemini / journal-with-day-headings + appended turns → automatic
+    turn-aware update (incremental, preserves uuid)
+  - Other source or unparseable format → warn, spring source NOT
+    archived, await manual triage
+  - Genuinely different memory that shares a filename → user renames
+    and re-ingests
 
-See `docs/v0.6_accumulating_sources.md` for the upcoming turn-level dedup
-design that fixes the last two cases.
+See `docs/v0.6_accumulating_sources.md` for the full design and the
+Phase 3 partial-enrichment work still pending.

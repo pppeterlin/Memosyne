@@ -497,7 +497,11 @@ def route_pages(path: Path, dry_run: bool) -> IngestResult:
     if not dry_run:
         out_dir.mkdir(parents=True, exist_ok=True)
         dst.write_text(md, encoding="utf-8")
-    print(f"    ✦ Inscribed to {dst.relative_to(ROOT)}")
+    try:
+        _disp = dst.relative_to(ROOT)
+    except ValueError:
+        _disp = dst
+    print(f"    ✦ Inscribed to {_disp}")
     return IngestResult(action="inserted", dst=dst)
 
 
@@ -567,12 +571,98 @@ def route_gemini(path: Path, dry_run: bool) -> IngestResult:
                 ])
         except ImportError:
             pass
-    print(f"    ✦ Inscribed to {dst.relative_to(ROOT)}")
+    try:
+        _disp = dst.relative_to(ROOT)
+    except ValueError:
+        _disp = dst
+    print(f"    ✦ Inscribed to {_disp}")
     return IngestResult(action="inserted", dst=dst)
 
 
+def _try_turn_aware_journal_update(
+    spring_content: str,
+    dst: Path,
+    dst_content: str,
+    dry_run: bool,
+) -> IngestResult | None:
+    """
+    v0.6 Phase 2: turn-aware path for journal files that use day headings.
+    Same shape as the Gemini variant but routes through JournalAppendParser.
+    Returns None for journals without ≥2 day headings (caller falls back
+    to file-level handling).
+    """
+    try:
+        from turns import JournalAppendParser, diff_against_known
+        from turn_ledger import known_turn_hashes, record_turns
+    except ImportError:
+        return None
+
+    parser = JournalAppendParser()
+    if not parser.can_parse(spring_content):
+        return None
+    spring_turns = parser.split_turns(spring_content)
+    if not spring_turns:
+        return None
+
+    dst_uuid = _extract_fm_field(dst_content, "uuid")
+    if not dst_uuid:
+        return None
+    rel_path = str(dst.relative_to(BRAIN_DB)) if dst.is_absolute() else str(dst)
+
+    known = known_turn_hashes(memory_uuid=dst_uuid)
+    if not known:
+        prior = parser.split_turns(dst_content)
+        if prior:
+            record_turns([
+                {"turn_hash": t.hash, "memory_uuid": dst_uuid,
+                 "memory_path": rel_path, "turn_index": t.index,
+                 "source": "journal_append"}
+                for t in prior
+            ], enriched=True, embedded=True)
+            known = {t.hash for t in prior}
+
+    new_turns = diff_against_known(spring_turns, known)
+    if not new_turns:
+        return IngestResult(action="skipped_same", dst=dst,
+                            note="all days already in ledger")
+
+    from datetime import datetime as _dt
+    today = _dt.now().strftime("%Y-%m-%d")
+    merged = spring_content
+    if _extract_fm_field(spring_content, "uuid") != dst_uuid:
+        merged = re.sub(r'^uuid:.*$', f'uuid: "{dst_uuid}"', merged,
+                        count=1, flags=re.MULTILINE)
+    merged = _bump_date_updated(merged, today)
+    merged = _clear_enriched_at(merged)
+    merged = _finalize_md(merged)
+
+    if not dry_run:
+        dst.write_text(merged, encoding="utf-8")
+        record_turns([
+            {"turn_hash": t.hash, "memory_uuid": dst_uuid,
+             "memory_path": rel_path, "turn_index": t.index,
+             "source": "journal_append"}
+            for t in spring_turns
+        ])
+        _mark_dirty_for_vectorize(rel_path)
+
+    try:
+        display = dst.relative_to(ROOT)
+    except ValueError:
+        display = dst
+    print(f"    ✦ Updated {display} (+{len(new_turns)}/{len(spring_turns)} days)")
+    return IngestResult(action="updated", dst=dst,
+                        note=f"+{len(new_turns)} new days of {len(spring_turns)} total")
+
+
 def route_journal(path: Path, dry_run: bool) -> IngestResult:
-    """一般 .md/.txt 日記 → 30_Journal/{year}/"""
+    """
+    一般 .md/.txt 日記 → 30_Journal/{year}/
+
+    v0.6 Phase 2: if the journal uses ## YYYY-MM-DD day headings, route
+    re-imports through the day-level turn-aware update path so appending
+    a new day doesn't trigger a conflict.
+    """
     date_str, year = _infer_date(path.stem)
     out_dir  = JOURNAL_DST / year
     dst_name = path.stem + ".md"
@@ -601,13 +691,23 @@ def route_journal(path: Path, dry_run: bool) -> IngestResult:
         if verdict == "same":
             _oracle_say("This memory already rests in the vault. Its echo endures.", indent=True)
             return IngestResult(action="skipped_same", dst=dst)
+
+        dst_content = dst.read_text(encoding="utf-8", errors="ignore")
+        update_result = _try_turn_aware_journal_update(content, dst, dst_content, dry_run)
+        if update_result is not None:
+            return update_result
+
         _warn_conflict(path, dst, sh, dh)
         return IngestResult(action="conflict", dst=dst, note="journal body diverged")
 
     if not dry_run:
         out_dir.mkdir(parents=True, exist_ok=True)
         dst.write_text(content, encoding="utf-8")
-    print(f"    ✦ Inscribed to {dst.relative_to(ROOT)}")
+    try:
+        _disp = dst.relative_to(ROOT)
+    except ValueError:
+        _disp = dst
+    print(f"    ✦ Inscribed to {_disp}")
     return IngestResult(action="inserted", dst=dst)
 
 
@@ -628,7 +728,11 @@ def route_knowledge(path: Path, dry_run: bool) -> IngestResult:
     if not dry_run:
         KNOWLEDGE_DST.mkdir(parents=True, exist_ok=True)
         dst.write_text(content, encoding="utf-8")
-    print(f"    ✦ Inscribed to {dst.relative_to(ROOT)}")
+    try:
+        _disp = dst.relative_to(ROOT)
+    except ValueError:
+        _disp = dst
+    print(f"    ✦ Inscribed to {_disp}")
     return IngestResult(action="inserted", dst=dst)
 
 # ─── 後處理：The Weaving + The Inscription ───────────────────

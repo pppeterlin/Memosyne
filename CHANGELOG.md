@@ -4,7 +4,63 @@ All notable changes to Memosyne are recorded here. Format inspired by
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow the project's `vMAJOR.MINOR` release sequence.
 
-## [Unreleased] — v0.5 scale & self-eval
+## [Unreleased] — v0.6 accumulating sources
+
+### Added
+
+- **Phase 0 — content_hash + conflict warn** — every ingest computes a
+  stable `body_hash` (normalized sha256, frontmatter-stripped) and
+  stamps it into frontmatter `content_hash`. When the same filename
+  re-imports with different body, the router warns loudly and
+  **does not archive the spring source**, breaking the pre-v0.6
+  silent-drop failure mode.
+- **Phase 1 — turn-aware Gemini update** — `turns.py` (Turn dataclass +
+  3 parsers: Gemini / Claude / JournalAppend), `turn_ledger.py`
+  (SQLite ledger of every turn ever ingested, sharing chronicle.db),
+  `ingest.py::_try_turn_aware_gemini_update` (preserves uuid, bumps
+  date_updated, clears enriched_at, records turn diffs).
+  Re-importing a continued Gemini conversation now adds only the new
+  turns to the ledger and triggers a clean vector chunk refresh.
+- **Phase 2 — parser abstraction + journal append** — `TurnParser`
+  protocol + `detect_parser()` registry. `route_journal` uses
+  `JournalAppendParser` for journals with ≥2 `## YYYY-MM-DD` headings,
+  giving the same incremental-update behavior as Gemini for journals
+  that grow over time.
+- **vectorize.refresh_paths(paths)** — deletes chunks by
+  metadata.path, called automatically by `build_index` after consuming
+  `dirty_paths.txt` written by ingest's update path. Fixes the
+  long-standing "updated file's new chunks get filtered as already
+  existing" silent failure.
+- **IngestResult dataclass** — replaces `Optional[Path]` return type
+  in all routers, separating `should_archive` from `needs_followup`
+  so a conflict can leave the spring source in place.
+
+### Changed
+
+- `ingest.py` routers now return `IngestResult`; `main()` branches on
+  `should_archive` / `needs_followup` rather than `if dst:`.
+- `from __future__ import annotations` added to `ingest.py` so the
+  new PEP 604 / generic-tuple annotations work on Python 3.8.
+- `dirty_paths` registered as a proper artifact under
+  `Personal_Brain_DB/00_System/dirty_paths.txt`.
+
+### Deferred to v0.6.1 / v0.7
+
+- Partial enrichment merge (current behavior: full re-enrich on
+  update — correct but LLM-expensive for very large conversations).
+- `memosyne health` check that frontmatter content_hash matches the
+  actual body (utility exists; integration pending).
+- Aletheia turn-level correction integration.
+
+### Tests
+
+- 28 new unit tests across content_hash, turns, turn_ledger, Phase 0
+  conflict detection, and Phase 1 turn-aware update (total now 109).
+- End-to-end smoke verified: insert → same-skip → continuation update
+  (+2/4 turns) → same-skip — ledger and dirty marker behave as
+  designed.
+
+## [0.5.0] — v0.5 scale & self-eval
 
 ### Added
 
