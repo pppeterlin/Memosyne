@@ -1,0 +1,52 @@
+name: verify
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+# The Vigil of Invariants — run public-data guardrails + unit tests on every PR.
+# Keeps `make verify` honest by enforcing it remotely.
+
+jobs:
+  invariants:
+    name: Invariants + unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need full history for the git-grep based path scans
+          fetch-depth: 0
+          submodules: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run invariants and unit tests
+        run: make verify
+
+  sample-eval:
+    name: Sample-vault rebuild + eval (optional smoke)
+    runs-on: ubuntu-latest
+    # Heavier — downloads embedding model. Allowed to fail without blocking PRs;
+    # promote to required once cache is wired.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: pip install -e .
+
+      - name: Rebuild sample vault indexes
+        run: make sample-rebuild
+
+      - name: Evaluate against sample golden
+        run: make sample-eval

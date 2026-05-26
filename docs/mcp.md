@@ -123,6 +123,88 @@ If retrieval indexes are missing:
 memosyne rebuild
 ```
 
+## HTTP Transport — The Open Threshold
+
+stdio is the default transport — it's already authenticated by being on
+the same machine as the user, and is what Claude Desktop / Cursor /
+Claude Code use. For agents that can't speak stdio (cloud agents,
+custom MCP clients, browser extensions), Memosyne v0.5 ships an HTTP
+transport with bearer-token auth.
+
+> **Warning.** HTTP transport binds to `127.0.0.1` by default and is
+> intended for local-only use (loopback, Tailscale, ngrok with auth).
+> Never expose the HTTP port on a public interface without an
+> additional reverse-proxy auth layer — bearer tokens alone are not a
+> substitute for TLS + IP allowlisting. OAuth 2.1 is planned for v0.6.
+
+### Mint a token
+
+```bash
+memosyne auth create cursor-laptop --scope read
+# label:  cursor-laptop
+# scope:  read
+# token:  <copy this immediately — shown once>
+```
+
+Scopes ladder from least to most privileged:
+
+| Scope | Allowed tools |
+|---|---|
+| `read`  | `search_memory`, `get_profile`, `list_journals`, `read_file`, `get_entity_timeline`, `query_memory_at_time`, `get_memory_health`, `invocation_protocol` |
+| `write` | + `optimize_memory`, all non-revert `aletheia_*` operations |
+| `admin` | + `aletheia_revert` — **also marked `local_only` and hidden on HTTP** |
+
+`local_only` tools are stripped from the HTTP-exposed tool set
+regardless of scope; admin-scope tokens can only invoke them via
+stdio.
+
+### Start the server
+
+```bash
+memosyne mcp --http              # 127.0.0.1:8000
+memosyne mcp --http --port 7777  # custom port
+```
+
+The banner reports which tools were hidden and where to find the auth
+log. Tokens live at `~/.memosyne/tokens.sqlite` (override with
+`MEMOSYNE_AUTH_DB`).
+
+### Manage tokens
+
+```bash
+memosyne auth list                  # show all (active + revoked)
+memosyne auth revoke cursor-laptop  # revoke by label
+```
+
+Tokens are stored only as SHA-256 hashes. Lookups touch `last_used`
+so you can audit which credentials are actually being used.
+
+### Reaching the server from a client
+
+Most MCP HTTP clients accept a URL + headers map:
+
+```
+url:     http://127.0.0.1:8000/mcp
+headers: { "Authorization": "Bearer <token>" }
+```
+
+For Tailscale / Mesh VPN scenarios, point the URL at the Tailscale
+hostname instead of localhost; the token check still applies. Do not
+disable the DNS rebinding protection in `FastMCP.settings` without
+understanding what it blocks.
+
+## Choosing a transport
+
+| Scenario | Transport |
+|---|---|
+| Claude Desktop, Cursor, Claude Code on the same machine | stdio (default) |
+| Custom local agent process | stdio |
+| Remote agent over Tailscale / SSH tunnel | HTTP + bearer |
+| Cloud agent (OpenAI, Perplexity, etc.) | HTTP behind your own auth proxy |
+| Public internet exposure | wait for OAuth 2.1 (v0.6) |
+
+---
+
 ### Local LLM Calls Fail
 
 A local LLM endpoint is only required for enrichment, contextualization, HyQE, and local chat. Memosyne does not bundle a runtime — start whichever local LLM server you use (Ollama, llama.cpp, LM Studio, vLLM, …) so the configured endpoint is reachable, then verify:

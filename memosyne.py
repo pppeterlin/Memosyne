@@ -252,6 +252,8 @@ def cmd_search(ns: argparse.Namespace) -> int:
         args.extend(["--type", ns.type])
     if ns.no_record_access:
         args.append("--no-record-access")
+    if ns.walk and ns.walk != "deep":
+        args.extend(["--walk", ns.walk])
     return _run_script("vectorize.py", args)
 
 
@@ -320,7 +322,12 @@ def cmd_mcp(ns: argparse.Namespace) -> int:
             return 1
         print("[ok] MCP server imports successfully")
         return 0
-    return _run_script("mcp_server.py", [])
+    extra: list[str] = []
+    if ns.http:
+        extra.append("--http")
+        extra.extend(["--host", ns.host])
+        extra.extend(["--port", str(ns.port)])
+    return _run_script("mcp_server.py", extra)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -346,6 +353,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="do not write this search to the Chronicle access log",
     )
+    search.add_argument(
+        "--walk",
+        choices=["deep", "fast", "off"],
+        default="deep",
+        help="graph walk strategy: deep=PPR spreading (default), "
+             "fast=two-pass walk, off=skip graph contribution",
+    )
     search.set_defaults(func=cmd_search)
 
     _add_passthrough(subparsers, "ingest", "run The Spring Ritual", "ingest.py")
@@ -354,6 +368,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_passthrough(subparsers, "chronicle", "inspect The Chronicle of Mneme", "mneme_weight.py")
     _add_passthrough(subparsers, "tapestry", "inspect or rebuild The Tapestry", "tapestry.py")
     _add_passthrough(subparsers, "correct", "run Aletheia correction tools", "aletheia.py")
+    _add_passthrough(
+        subparsers, "query-log",
+        "The Augury Replay — capture stats / export / replay (opt-in)",
+        "query_log.py",
+    )
 
     eval_p = subparsers.add_parser(
         "eval",
@@ -377,7 +396,19 @@ def build_parser() -> argparse.ArgumentParser:
     mcp.add_argument("--check", action="store_true", help="import-check the MCP server without starting it")
     mcp.add_argument("--print-config", action="store_true", help="print an MCP client config snippet")
     mcp.add_argument("--name", default="memosyne", help="MCP server name for --print-config")
+    mcp.add_argument("--http", action="store_true",
+                     help="serve over streamable HTTP (bearer-token auth required)")
+    mcp.add_argument("--host", default="127.0.0.1",
+                     help="HTTP bind host (default 127.0.0.1)")
+    mcp.add_argument("--port", type=int, default=8000,
+                     help="HTTP bind port (default 8000)")
     mcp.set_defaults(func=cmd_mcp)
+
+    _add_passthrough(
+        subparsers, "auth",
+        "manage HTTP bearer tokens (create / list / revoke)",
+        "auth.py",
+    )
 
     return parser
 

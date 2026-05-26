@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -62,6 +63,82 @@ DECAY_D = 0.5
 
 # rerank 時 ACT-R 分數的權重係數
 ACTR_ALPHA = 0.2
+
+# ─── Per-Prefix Decay（v0.5）──────────────────────────────────
+#
+# 不同來源的記憶有不同時間敏感性：
+#   30_Journal/      — 日記，時間敏感，標準衰減
+#   20_AI_Chats/     — AI 對話，較易過時，衰減稍快
+#   40_Projects/     — 專案，中期相關，衰減偏慢
+#   50_Knowledge/    — 知識筆記，時間中性，衰減極慢（近似 evergreen）
+#   10_Profile/      — 個人 profile，極長期，衰減最慢
+#
+# 較高的 d 值 = 衰減更陡（時間敏感）；較低 d 值 = 接近 evergreen。
+# 預設選用 ACT-R 文獻中的 0.5 作為日記基準，其餘相對它調整。
+#
+# 可用 env var 覆寫：MEMOSYNE_CHRONICLE_DECAY='{"30_Journal/": 0.5, ...}'
+# 環境變數 prefix 比對採「最長前綴勝出」邏輯（與 gbrain recency-decay 一致）。
+
+DEFAULT_DECAY_BY_PREFIX: dict[str, float] = {
+    "10_Profile/":   0.20,
+    "20_AI_Chats/":  0.60,
+    "30_Journal/":   0.50,
+    "40_Projects/":  0.40,
+    "50_Knowledge/": 0.25,
+}
+
+
+def _load_decay_map() -> dict[str, float]:
+    """從 env var 載入覆寫，否則用預設。Malformed JSON 回到預設並印警告。"""
+    raw = os.getenv("MEMOSYNE_CHRONICLE_DECAY")
+    if not raw:
+        return dict(DEFAULT_DECAY_BY_PREFIX)
+    try:
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError("not a dict")
+        out: dict[str, float] = {}
+        for k, v in parsed.items():
+            out[str(k)] = float(v)
+        return out
+    except (ValueError, TypeError) as e:
+        print(f"[Chronicle] MEMOSYNE_CHRONICLE_DECAY parse failed ({e}); falling back to defaults",
+              flush=True)
+        return dict(DEFAULT_DECAY_BY_PREFIX)
+
+
+_DECAY_MAP: dict[str, float] | None = None
+
+
+def get_decay_map() -> dict[str, float]:
+    """惰性載入 decay map。測試可呼叫 reset_decay_map() 重設。"""
+    global _DECAY_MAP
+    if _DECAY_MAP is None:
+        _DECAY_MAP = _load_decay_map()
+    return _DECAY_MAP
+
+
+def reset_decay_map() -> None:
+    """測試用：清空 cached decay map，下次呼叫會重新從 env 讀取。"""
+    global _DECAY_MAP
+    _DECAY_MAP = None
+
+
+def decay_for_path(memory_path: str) -> float:
+    """
+    回傳該 memory_path 應使用的衰減參數 d。
+    採最長前綴匹配；無前綴匹配時使用 DECAY_D（全域預設）。
+    """
+    if not memory_path:
+        return DECAY_D
+    decay_map = get_decay_map()
+    best_prefix = ""
+    for prefix in decay_map:
+        if memory_path.startswith(prefix) and len(prefix) > len(best_prefix):
+            best_prefix = prefix
+    if best_prefix:
+        return decay_map[best_prefix]
+    return DECAY_D
 
 
 # ─── 資料庫初始化 ───────────────────────────────────────────
@@ -165,11 +242,17 @@ def record_access(memory_paths: list[str], source: str = "search") -> None:
 # ─── ACT-R 激活分數計算 ────────────────────────────────────
 
 def compute_activation(memory_path: str, conn: sqlite3.Connection | None = None,
-                       now: datetime | None = None, d: float = DECAY_D) -> float:
+                       now: datetime | None = None,
+                       d: float | None = None) -> float:
     """
     計算單一記憶的 ACT-R 基礎激活分數。
 
     A_i = ln( Σ_{k=1}^{n} t_k^{-d} )
+
+    Args:
+        d: 衰減參數。None（預設）會依 memory_path 前綴從 decay map 取值
+           （v0.5：30_Journal/=0.5、50_Knowledge/=0.25 ⋯）。
+           傳入明確數值會覆寫 per-prefix 行為（測試 / 強制重排用）。
 
     Returns:
         激活分數（float），無存取紀錄時回傳 0.0
@@ -183,6 +266,9 @@ def compute_activation(memory_path: str, conn: sqlite3.Connection | None = None,
 
     if now is None:
         now = datetime.now()
+
+    if d is None:
+        d = decay_for_path(memory_path)
 
     rows = conn.execute(
         "SELECT accessed_at FROM access_events WHERE memory_path = ?",

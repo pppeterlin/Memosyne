@@ -26,6 +26,7 @@ Memosyne 是一個本地優先的個人記憶基礎設施層，供 AI Agent 透�
 | v0.2 | 檢索凍結 | 鎖定檢索架構與評估基線 | 內部使用 |
 | v0.3 | 使用產品化 | 讓日常操作可預期、可診斷 | 進階使用者 / 私有 beta |
 | v0.4 | 開源發布 | 準備乾淨、可安裝、隱私安全的公開版本 | 公開 |
+| v0.5 | 規模化與自我評估 | deterministic 抽取、Augury Replay、graph walk 多策略、MCP HTTP、skills、CI invariants | 開發完成（待 release） |
 | v0.6 | 累積型來源 | turn-level 去重，正確處理 Gemini 續寫等增量匯入 | 規劃中 |
 
 ## v0.2：檢索凍結
