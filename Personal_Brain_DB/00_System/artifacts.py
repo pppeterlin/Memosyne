@@ -22,6 +22,24 @@ VAULT_DIR = Path(os.getenv("MEMOSYNE_VAULT_DIR", BRAIN_DIR / "_vault")).expandus
 ARTIFACT_DIR = Path(os.getenv("MEMOSYNE_ARTIFACT_DIR", VAULT_DIR)).expanduser()
 
 
+def data_root() -> Path:
+    """
+    Return the directory that contains the muse subdirectories
+    (10_Profile, 20_AI_Chats, 30_Journal, 40_Projects, 50_Knowledge).
+
+    When MEMOSYNE_VAULT_DIR is set, the override IS the data root: scripts
+    scan and write under that path directly. This is the path used by
+    sample_vault and any external data layout.
+
+    When no override is set, the data root is the legacy Personal_Brain_DB
+    layout, where muse subdirectories are symlinks into _vault/<muse>/.
+    """
+    env = os.getenv("MEMOSYNE_VAULT_DIR")
+    if env:
+        return Path(env).expanduser().resolve()
+    return BRAIN_DIR
+
+
 @dataclass(frozen=True)
 class Artifact:
     key: str
@@ -75,6 +93,13 @@ ARTIFACTS: dict[str, Artifact] = {
         kind="derived graph store",
         privacy="private",
         description="The Tapestry Kuzu graph database.",
+    ),
+    "chroma_db": Artifact(
+        key="chroma_db",
+        relative_path="chroma_db",
+        kind="derived vector store",
+        privacy="private",
+        description="ChromaDB persistent vector index.",
     ),
     "muse_centroids": Artifact(
         key="muse_centroids",

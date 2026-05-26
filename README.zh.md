@@ -22,7 +22,7 @@ AI 能力每季都在跳躍，但再強的模型也無法在冷啟動狀態下�
     ↓ spring/（記憶之泉）
 ingest.py — The Spring Ritual
     ↓
-enrich.py — The Weaving（Oracle of Mneme / Ollama LLM）
+enrich.py — The Weaving（Oracle of Mneme，使用使用者自選的 LLM 後端）
     ↓
 vectorize.py — The Inscription（向量化 + 索引）
     ↓
@@ -94,7 +94,7 @@ python3 Personal_Brain_DB/00_System/search.py
 # 單次搜尋
 python3 Personal_Brain_DB/00_System/vectorize.py --query "深圳工作" --top 5
 
-# RAG 對話（本地 Ollama）
+# RAG 對話（使用你設定的 LLM 後端）
 python3 Personal_Brain_DB/00_System/chat.py
 ```
 
@@ -110,7 +110,7 @@ python3 Personal_Brain_DB/00_System/chat.py
 | `tapestry.py` | 知識圖譜管理 | `--backfill`, `--stats`, `--search`, `--ppr` |
 | `mcp_server.py` | MCP 伺服器（對外接口） | — |
 | `search.py` | 互動式搜尋 REPL | — |
-| `chat.py` | RAG 對話（Ollama + Gemini） | — |
+| `chat.py` | RAG 對話（可設定本地或雲端後端） | — |
 | `augury.py` | 記憶品質審計與修正 | `--inspect`, `--correct`, `--patrol` |
 | `mneme_weight.py` | ACT-R 存取紀錄與認知衰減 | `--stats`, `--top`, `--score` |
 | `slumber.py` | 記憶鞏固（The Rite of Slumber） | `--reflect`, `--hebbian`, `--forget`, `--stats` |
@@ -232,7 +232,7 @@ python3 Personal_Brain_DB/00_System/slumber.py --forget --dry-run
 | 圖資料庫 | Kuzu (Cypher, 嵌入式) |
 | 關鍵字索引 | rank-bm25 (CJK bigram) |
 | PPR | NetworkX pagerank |
-| LLM 後端 | Ollama (本地) + Google Gemini (雲端) |
+| LLM 後端 | 可插拔——任一本地 LLM runtime（Ollama、llama.cpp、LM Studio、vLLM 等），或可選的雲端 provider |
 | MCP 框架 | FastMCP |
 | 認知重排 | ACT-R (自實作, SQLite chronicle) |
 

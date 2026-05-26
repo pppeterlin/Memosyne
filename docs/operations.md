@@ -84,7 +84,7 @@ Statuses:
 
 Expected warnings on a private workstation can include:
 
-- Ollama not running when you are not enriching or using local chat.
+- The LLM endpoint not reachable when you are not enriching, contextualizing, or running local chat.
 - Root-level private files present while developing locally. These must not be published.
 
 ## Common Fixes
@@ -178,20 +178,21 @@ pip install -r Personal_Brain_DB/00_System/requirements.txt
 python memosyne.py mcp --check
 ```
 
-### Ollama Is Not Running
+### LLM Endpoint Not Reachable
 
-Symptom:
+Symptom (label depends on which backend the health check probes):
 
 ```text
 [warn] Ollama API ...
 ```
 
-Fix only when you need enrichment, contextualization, HyQE, or local chat:
+Fix only when you need enrichment, contextualization, HyQE, or local chat. Start whichever local LLM runtime you use (Ollama, llama.cpp server, LM Studio, vLLM, …) so the configured endpoint becomes reachable, then rerun:
 
 ```bash
-ollama serve
 python memosyne.py health
 ```
+
+If you are deliberately using a cloud provider for these workflows, ensure the corresponding credentials are loaded in your local config; see [configuration.md](configuration.md).
 
 ## Artifact Policy
 

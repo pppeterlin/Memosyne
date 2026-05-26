@@ -15,9 +15,21 @@ Personal_Brain_DB/00_System/chroma_db/
 Personal_Brain_DB/00_System/tapestry_db/
 Personal_Brain_DB/00_System/bm25_index.pkl
 Personal_Brain_DB/00_System/contextual_cache.json
+Personal_Brain_DB/00_System/hyqe_cache.json
+Personal_Brain_DB/00_System/muse_centroids.json
 Personal_Brain_DB/00_System/flashrank_cache/
 Personal_Brain_DB/00_System/index.json
 Personal_Brain_DB/00_System/augury_reports/
+
+# Private vault submodule (never enters any docker image)
+Personal_Brain_DB/_vault/
+
+# Sample vault derived artifacts (rebuilt inside the verify image)
+sample_vault/_artifacts/
+
+# Worktrees and editor scratch
+.claude/worktrees/
+docs/learning/
 
 # Environment & secrets
 .env
