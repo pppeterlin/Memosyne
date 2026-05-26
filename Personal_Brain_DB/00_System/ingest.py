@@ -23,6 +23,8 @@ Memosyne — The Spring Ritual (ingest.py)
             Urania（知識）    → 50_Knowledge/
 """
 
+from __future__ import annotations
+
 import os
 import re
 import sys
@@ -144,21 +146,137 @@ def _quick_fm_field(content: str, field: str) -> str:
 
 # ─── 路由：The Discernment ───────────────────────────────────
 
-def route_pages(path: Path, dry_run: bool) -> Optional[Path]:
+# ─── v0.6: content-hash aware result type ─────────────────────
+#
+# Pre-v0.6 routers returned Optional[Path]: a path on success-or-skip,
+# None on rejection. main() then unconditionally archived the spring
+# source whenever the router returned a path — which silently dropped
+# updated content when filename matched but body differed.
+#
+# v0.6 splits "this ingestion happened" from "the spring source should
+# be archived". A conflict (same filename, different body, no turn-aware
+# update path) keeps the spring source in place so the user can decide.
+
+from dataclasses import dataclass
+
+@dataclass
+class IngestResult:
+    action: str          # inserted | skipped_same | updated | conflict | rejected
+    dst:    Optional[Path]
+    note:   str = ""
+
+    @property
+    def should_archive(self) -> bool:
+        """Spring source moves to _processed/ unless we hit a conflict."""
+        return self.action in ("inserted", "skipped_same", "updated")
+
+    @property
+    def needs_followup(self) -> bool:
+        """Should enrich + vectorize run for this file?"""
+        return self.action in ("inserted", "updated")
+
+
+def _extract_content_hash_from_frontmatter(content: str) -> str:
+    """
+    Return the content_hash field declared in the file's frontmatter,
+    or "" if absent. Cheap regex — avoids importing yaml here.
+    """
+    if not content.startswith("---"):
+        return ""
+    end = content.find("\n---", 3)
+    if end == -1:
+        return ""
+    fm = content[3:end]
+    m = re.search(r'^content_hash:\s*["\']?([^"\'\n]+)', fm, re.MULTILINE)
+    return m.group(1).strip() if m else ""
+
+
+def _inject_or_replace_content_hash(content: str, new_hash: str) -> str:
+    """
+    Ensure frontmatter contains `content_hash: "<new_hash>"`.
+    Adds if missing, replaces if present. Leaves body untouched.
+    Requires content to already have frontmatter; caller should check.
+    """
+    if not content.startswith("---"):
+        return content
+    end = content.find("\n---", 3)
+    if end == -1:
+        return content
+    fm = content[3:end]
+    body = content[end:]  # includes the closing ---
+
+    if "content_hash:" in fm:
+        fm = re.sub(
+            r'^content_hash:.*$',
+            f'content_hash: "{new_hash}"',
+            fm,
+            count=1,
+            flags=re.MULTILINE,
+        )
+    else:
+        # Insert before the closing ---; keep one trailing newline
+        fm = fm.rstrip("\n") + f'\ncontent_hash: "{new_hash}"\n'
+    return "---" + fm + body
+
+
+def _classify_against_dst(spring_content: str, dst: Path) -> tuple[str, str, str]:
+    """
+    Compare a freshly-read spring file against an existing vault file.
+
+    Returns (verdict, spring_hash, dst_hash) where verdict is one of:
+        same      — bodies match; safe to skip
+        diverged  — bodies differ; needs Phase-1 turn-aware path or warn
+
+    Pure function — no IO beyond reading dst.
+    """
+    from content_hash import body_hash as _body_hash
+    spring_hash = _body_hash(spring_content)
+    try:
+        dst_content = dst.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return "diverged", spring_hash, ""
+    declared = _extract_content_hash_from_frontmatter(dst_content)
+    dst_hash = declared or _body_hash(dst_content)
+    if spring_hash == dst_hash:
+        return "same", spring_hash, dst_hash
+    return "diverged", spring_hash, dst_hash
+
+
+def _warn_conflict(spring_path: Path, dst: Path, spring_hash: str, dst_hash: str) -> None:
+    """Phase 0: surface a divergence loudly so the user can intervene."""
+    print(f"    ⚠  Conflict: {spring_path.name} differs from the vault copy.")
+    print(f"       vault path:  {dst.relative_to(ROOT) if dst.is_absolute() else dst}")
+    print(f"       spring hash: {spring_hash[:23]}…")
+    print(f"       vault hash:  {dst_hash[:23]}…")
+    print(f"       The spring source is NOT archived — review and decide:")
+    print(f"         • re-export accidentally?            → delete {spring_path.name} from spring/")
+    print(f"         • intentional update of a thread?    → wait for turn-aware update (v0.6 Phase 1)")
+    print(f"         • genuinely different memory?        → rename and re-ingest")
+
+
+def _finalize_md(content: str) -> str:
+    """
+    Ensure content_hash in frontmatter reflects the current body.
+    Idempotent — recomputes hash before writing so re-saves stay accurate.
+    """
+    from content_hash import body_hash
+    h = body_hash(content)
+    if content.startswith("---"):
+        return _inject_or_replace_content_hash(content, h)
+    return content
+
+
+def route_pages(path: Path, dry_run: bool) -> IngestResult:
     """提取 .pages 文字 → 30_Journal/{year}/"""
     text = _extract_pages_text(path)
     if not text.strip():
         _oracle_say(f"The fragment '{path.name}' is silent — no echoes found. Returned to the mortal world.")
-        return None
+        return IngestResult(action="rejected", dst=None, note="empty pages extraction")
 
     date_str, year = _infer_date(path.stem)
     out_dir  = JOURNAL_DST / year
     dst_name = re.sub(r'\.pages$', '.md', path.name, flags=re.IGNORECASE)
     dst      = out_dir / dst_name
-
-    if dst.exists():
-        _oracle_say(f"This memory already rests in the vault. Its echo endures.", indent=True)
-        return dst
 
     uid           = hashlib.md5(path.name.encode()).hexdigest()[:12]
     summary       = _summary(text)
@@ -173,39 +291,61 @@ def route_pages(path: Path, dry_run: bool) -> Optional[Path]:
         f'filename_hint: {fname_hint_js}\n'
         f'related_entities: []\nsummary: "{summary}"\n---\n\n{text}\n'
     )
+    md = _finalize_md(md)
+
+    if dst.exists():
+        verdict, sh, dh = _classify_against_dst(md, dst)
+        if verdict == "same":
+            _oracle_say("This memory already rests in the vault. Its echo endures.", indent=True)
+            return IngestResult(action="skipped_same", dst=dst)
+        _warn_conflict(path, dst, sh, dh)
+        return IngestResult(action="conflict", dst=dst, note="pages body diverged")
+
     if not dry_run:
         out_dir.mkdir(parents=True, exist_ok=True)
         dst.write_text(md, encoding="utf-8")
     print(f"    ✦ Inscribed to {dst.relative_to(ROOT)}")
-    return dst
+    return IngestResult(action="inserted", dst=dst)
 
-def route_gemini(path: Path, dry_run: bool) -> Optional[Path]:
-    """複製 Gemini .md，補齊 frontmatter → 20_AI_Chats/Gemini/"""
+
+def route_gemini(path: Path, dry_run: bool) -> IngestResult:
+    """
+    複製 Gemini .md，補齊 frontmatter → 20_AI_Chats/Gemini/
+
+    v0.6 Phase 0 changes only: detect divergence + warn + refuse to
+    archive. Turn-aware incremental update is wired in Phase 1 (next
+    batch) — until then a re-imported Gemini conversation with new
+    turns falls through to the conflict warning instead of silently
+    dropping content.
+    """
     dst = AI_CHAT_DST / path.name
-    if dst.exists():
-        _oracle_say(f"This memory already rests in the vault. Its echo endures.", indent=True)
-        return dst
-
     content = path.read_text(encoding="utf-8", errors="ignore")
     if not content.strip().startswith("---"):
         content = _add_gemini_frontmatter(content, path.name)
+    content = _finalize_md(content)
+
+    if dst.exists():
+        verdict, sh, dh = _classify_against_dst(content, dst)
+        if verdict == "same":
+            _oracle_say("This memory already rests in the vault. Its echo endures.", indent=True)
+            return IngestResult(action="skipped_same", dst=dst)
+        _warn_conflict(path, dst, sh, dh)
+        return IngestResult(action="conflict", dst=dst,
+                            note="gemini body diverged — turn-aware update pending Phase 1")
 
     if not dry_run:
         AI_CHAT_DST.mkdir(parents=True, exist_ok=True)
         dst.write_text(content, encoding="utf-8")
     print(f"    ✦ Inscribed to {dst.relative_to(ROOT)}")
-    return dst
+    return IngestResult(action="inserted", dst=dst)
 
-def route_journal(path: Path, dry_run: bool) -> Optional[Path]:
+
+def route_journal(path: Path, dry_run: bool) -> IngestResult:
     """一般 .md/.txt 日記 → 30_Journal/{year}/"""
     date_str, year = _infer_date(path.stem)
     out_dir  = JOURNAL_DST / year
     dst_name = path.stem + ".md"
     dst      = out_dir / dst_name
-
-    if dst.exists():
-        _oracle_say(f"This memory already rests in the vault. Its echo endures.", indent=True)
-        return dst
 
     content = path.read_text(encoding="utf-8", errors="ignore")
     if not content.strip().startswith("---"):
@@ -223,26 +363,42 @@ def route_journal(path: Path, dry_run: bool) -> Optional[Path]:
             f'related_entities: []\nsummary: "{summary}"\n---\n\n'
         )
         content = front + content
+    content = _finalize_md(content)
+
+    if dst.exists():
+        verdict, sh, dh = _classify_against_dst(content, dst)
+        if verdict == "same":
+            _oracle_say("This memory already rests in the vault. Its echo endures.", indent=True)
+            return IngestResult(action="skipped_same", dst=dst)
+        _warn_conflict(path, dst, sh, dh)
+        return IngestResult(action="conflict", dst=dst, note="journal body diverged")
 
     if not dry_run:
         out_dir.mkdir(parents=True, exist_ok=True)
         dst.write_text(content, encoding="utf-8")
     print(f"    ✦ Inscribed to {dst.relative_to(ROOT)}")
-    return dst
+    return IngestResult(action="inserted", dst=dst)
 
-def route_knowledge(path: Path, dry_run: bool) -> Optional[Path]:
+
+def route_knowledge(path: Path, dry_run: bool) -> IngestResult:
     """知識筆記 .md → 50_Knowledge/"""
     dst = KNOWLEDGE_DST / path.name
-    if dst.exists():
-        _oracle_say(f"This memory already rests in the vault. Its echo endures.", indent=True)
-        return dst
-
     content = path.read_text(encoding="utf-8", errors="ignore")
+    content = _finalize_md(content)
+
+    if dst.exists():
+        verdict, sh, dh = _classify_against_dst(content, dst)
+        if verdict == "same":
+            _oracle_say("This memory already rests in the vault. Its echo endures.", indent=True)
+            return IngestResult(action="skipped_same", dst=dst)
+        _warn_conflict(path, dst, sh, dh)
+        return IngestResult(action="conflict", dst=dst, note="knowledge body diverged")
+
     if not dry_run:
         KNOWLEDGE_DST.mkdir(parents=True, exist_ok=True)
         dst.write_text(content, encoding="utf-8")
     print(f"    ✦ Inscribed to {dst.relative_to(ROOT)}")
-    return dst
+    return IngestResult(action="inserted", dst=dst)
 
 # ─── 後處理：The Weaving + The Inscription ───────────────────
 
@@ -429,11 +585,16 @@ def main():
             print(f"     The Muses know not this form ({f.suffix}). It is returned.")
             continue
 
-        dst = router(f, dry_run=args.dry_run)
-        if dst and not args.dry_run:
-            if dst.exists():
-                new_files.append(dst)
-            archive_to_processed(f, dry_run=args.dry_run)
+        result = router(f, dry_run=args.dry_run)
+        if not args.dry_run:
+            if result.needs_followup and result.dst and result.dst.exists():
+                new_files.append(result.dst)
+            if result.should_archive:
+                archive_to_processed(f, dry_run=args.dry_run)
+            elif result.action == "conflict":
+                # Leave spring original in place so the user can decide
+                # what to do (see _warn_conflict output above).
+                pass
 
     if not new_files:
         print("\n  All fragments were already known to the vault.")
