@@ -39,7 +39,7 @@ Raw input (.pages / .md / Gemini export / any text)
     ↓  spring/  (The Spring of Mnemosyne — drop zone)
 ingest.py    — The Spring Ritual   (format detection + Nine Muses routing)
     ↓
-enrich.py    — The Weaving         (Ollama LLM entity extraction)
+enrich.py    — The Weaving         (LLM-based entity extraction; backend of your choice)
     ↓
 vectorize.py — The Inscription     (indexing)
     ↓
@@ -147,8 +147,8 @@ python3 Personal_Brain_DB/00_System/slumber.py --forget --dry-run
 ### Requirements
 
 - Python 3.10+
-- [Ollama](https://ollama.ai) running locally (for enrichment and contextual notes)
-- Recommended models: `gemma4:26b` (enrichment), `gemma3:4b` (contextual notes)
+- A local LLM endpoint of your choice for enrichment, contextualization, and local chat (e.g. [Ollama](https://ollama.ai), llama.cpp, LM Studio, vLLM). Memosyne does not bundle a runtime or assume a specific model — pick one that fits your hardware and configure the endpoint in your local `.env` / `memosyne.toml`.
+- Cloud LLM access is optional and opt-in; see [docs/privacy.md](docs/privacy.md).
 
 ```bash
 # Clone and set up environment
@@ -187,7 +187,7 @@ python3 Personal_Brain_DB/00_System/search.py
 # One-shot query
 python3 Personal_Brain_DB/00_System/vectorize.py --query "happiest days in 2025" --top 5
 
-# RAG chat (local Ollama)
+# RAG chat (uses your configured LLM backend)
 python3 Personal_Brain_DB/00_System/chat.py
 ```
 
@@ -233,7 +233,7 @@ Add to your MCP config (`~/.claude/claude_desktop_config.json` or equivalent):
 | `tapestry.py` | Knowledge graph management | `--backfill` `--stats` `--search` `--ppr` |
 | `mcp_server.py` | MCP server | — |
 | `search.py` | Interactive search REPL | — |
-| `chat.py` | RAG chat (Ollama + Gemini backends) | — |
+| `chat.py` | RAG chat (configurable local or cloud backend) | — |
 | `augury.py` | Memory quality audit and correction | `--inspect` `--correct` `--patrol` |
 | `mneme_weight.py` | ACT-R access log and cognitive decay | `--stats` `--top` `--score` |
 | `slumber.py` | Memory consolidation | `--reflect` `--hebbian` `--forget` `--stats` |
@@ -312,7 +312,7 @@ entities:
 | Graph DB | Kuzu (embedded · Cypher) |
 | Keyword index | rank-bm25 (CJK bigram tokenizer) |
 | PPR | NetworkX pagerank |
-| LLM backend | Ollama (local) · Google Gemini (cloud) |
+| LLM backend | Pluggable — any local LLM runtime (Ollama, llama.cpp, LM Studio, vLLM, …) or opt-in cloud provider |
 | MCP framework | FastMCP |
 | Cognitive reranking | ACT-R (custom impl · SQLite) |
 

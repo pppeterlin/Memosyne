@@ -41,8 +41,11 @@ from datetime import datetime
 ROOT          = Path(__file__).resolve().parent.parent.parent   # personal-memory/
 SPRING_DIR    = ROOT / "spring"                       # 記憶之泉 drop zone
 PROCESSED     = SPRING_DIR / "_processed"             # 處理後歸檔
-BRAIN_DB      = ROOT / "Personal_Brain_DB"
-SYSTEM_DIR    = BRAIN_DB / "00_System"
+SYSTEM_DIR    = Path(__file__).resolve().parent
+import sys as _sys
+_sys.path.insert(0, str(SYSTEM_DIR))
+from artifacts import data_root  # noqa: E402
+BRAIN_DB      = data_root()
 
 JOURNAL_DST   = BRAIN_DB / "30_Journal"
 AI_CHAT_DST   = BRAIN_DB / "20_AI_Chats" / "Gemini"

@@ -167,14 +167,6 @@ def _collect_health_checks() -> list[HealthCheck]:
             "Install runtime deps: pip install -r Personal_Brain_DB/00_System/requirements.txt",
         ))
 
-    chroma_dir = SYSTEM_DIR / "chroma_db"
-    checks.append(_check(
-        True if _directory_has_entries(chroma_dir) else None,
-        "Chroma DB",
-        str(chroma_dir),
-        "Run: python memosyne.py rebuild",
-    ))
-
     for artifact in artifact_manifest():
         expected = artifact["key"] in {
             "chronicle_jsonl",
@@ -184,6 +176,7 @@ def _collect_health_checks() -> list[HealthCheck]:
             "hyqe_cache",
             "tapestry_db",
             "muse_centroids",
+            "chroma_db",
         }
         exists = bool(artifact["exists"])
         checks.append(_check(
@@ -262,6 +255,50 @@ def cmd_search(ns: argparse.Namespace) -> int:
     return _run_script("vectorize.py", args)
 
 
+def cmd_eval(ns: argparse.Namespace) -> int:
+    sample_vault_dir = ROOT / "sample_vault"
+    sample_artifact_dir = sample_vault_dir / "_artifacts"
+    sample_golden = sample_vault_dir / "_eval" / "golden.yaml"
+
+    if ns.sample:
+        if ns.golden:
+            print("[fail] --sample and --golden are mutually exclusive")
+            return 1
+        if not sample_golden.exists():
+            print(f"[fail] sample golden set not found: {sample_golden}")
+            return 1
+        if not sample_artifact_dir.exists():
+            print(
+                f"[fail] sample artifacts missing at {sample_artifact_dir}\n"
+                "       run rebuild against sample_vault first:\n"
+                f"       MEMOSYNE_VAULT_DIR={sample_vault_dir} "
+                f"MEMOSYNE_ARTIFACT_DIR={sample_artifact_dir} "
+                "python memosyne.py rebuild"
+            )
+            return 1
+        env_overrides = {
+            "MEMOSYNE_VAULT_DIR": str(sample_vault_dir),
+            "MEMOSYNE_ARTIFACT_DIR": str(sample_artifact_dir),
+        }
+        golden_path = sample_golden
+    else:
+        if not ns.golden:
+            print("[fail] either --sample or --golden <path> is required")
+            return 1
+        env_overrides = {}
+        golden_path = Path(ns.golden).expanduser().resolve()
+
+    args = [
+        "--golden", str(golden_path),
+        "--top-k", str(ns.top_k),
+        "--config", ns.config,
+    ]
+    script = _system_script("eval_golden.py")
+    cmd = [PYTHON, str(script), *args]
+    env = {**os.environ, **env_overrides}
+    return subprocess.call(cmd, cwd=str(ROOT), env=env)
+
+
 def cmd_mcp(ns: argparse.Namespace) -> int:
     if ns.print_config:
         config = {
@@ -317,6 +354,24 @@ def build_parser() -> argparse.ArgumentParser:
     _add_passthrough(subparsers, "chronicle", "inspect The Chronicle of Mneme", "mneme_weight.py")
     _add_passthrough(subparsers, "tapestry", "inspect or rebuild The Tapestry", "tapestry.py")
     _add_passthrough(subparsers, "correct", "run Aletheia correction tools", "aletheia.py")
+
+    eval_p = subparsers.add_parser(
+        "eval",
+        help="run a golden-set retrieval evaluation",
+    )
+    eval_p.add_argument(
+        "--sample",
+        action="store_true",
+        help="evaluate against sample_vault/_eval/golden.yaml with auto-set env",
+    )
+    eval_p.add_argument(
+        "--golden",
+        default="",
+        help="path to a golden_set.yaml (omit when --sample is used)",
+    )
+    eval_p.add_argument("--top-k", type=int, default=10)
+    eval_p.add_argument("--config", default="baseline")
+    eval_p.set_defaults(func=cmd_eval)
 
     mcp = subparsers.add_parser("mcp", help="run or check the MCP server")
     mcp.add_argument("--check", action="store_true", help="import-check the MCP server without starting it")

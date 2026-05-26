@@ -62,6 +62,10 @@ Personal_Brain_DB/00_System/flashrank_cache/
 **/*.pyc
 **/*.pyo
 .Python
+*.egg-info/
+
+# Educational long-form material kept local until reviewed for public release
+docs/learning/
 
 # ══════════════════════════════════════════
 #  系統雜項
@@ -73,3 +77,6 @@ Personal_Brain_DB/00_System/flashrank_cache/
 /_internal/
 **/.cursorrules
 .env
+
+# Sample vault derived artifacts (rebuilt from sample sources, never committed)
+sample_vault/_artifacts/

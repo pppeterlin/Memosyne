@@ -63,31 +63,23 @@ memosyne rebuild
 
 ## Models
 
-| Setting | Current default |
+| Setting | Notes |
 |---|---|
-| Embedding | `paraphrase-multilingual-MiniLM-L12-v2` |
-| Enrichment | script default, usually an Ollama model |
-| Contextual / HyQE | `gemma3:4b` |
-| Local chat | `gemma4:26b` |
-| Cloud chat | Gemini via `google-genai` |
-| Proxy backend | OpenAI-compatible proxy via `proxy:` model prefix |
+| Embedding | A multilingual sentence-transformers model. The embedding model is the only model Memosyne ships with a hard expectation on; pick a model that matches the languages you write in. |
+| Enrichment / Contextual / HyQE / Local chat | Any locally-served LLM you choose. Memosyne does not ship a default model — pass model identifiers via script flags or set them in your local config. |
+| Cloud LLM (optional) | Any provider supported by `Personal_Brain_DB/00_System/llm_client.py`; see that file for the current list. |
 
-Model names are currently passed through script flags or code defaults. v0.3 documents the configuration surface without forcing a config-file refactor.
+Memosyne does not bundle, download, or assume any specific generative LLM. The local LLM runtime (Ollama, llama.cpp, LM Studio, vLLM, …) and the model itself are the user's choice. Public defaults in this repo intentionally avoid hard-coding specific model names.
 
 ## Environment Variables
 
 | Variable | Purpose |
 |---|---|
-| `OLLAMA_HOST` | Ollama endpoint, default `http://127.0.0.1:11434` |
-| `MEMOSYNE_HF_OFFLINE` | default `1`; avoids Hugging Face network checks after models are cached |
-| `LLM_PROVIDER` | optional forced provider: `ollama`, `openrouter`, or `proxy` |
-| `OPENROUTER_API_KEY` | OpenRouter API key |
-| `OPENROUTER_KEY` | fallback OpenRouter key name |
-| `OPENROUTER_BASE_URL` | optional OpenRouter-compatible base URL |
-| `PROXY_API_KEY` | key for an OpenAI-compatible proxy |
-| `PROXY_BASE_URL` | proxy endpoint override |
-| `ANTHROPIC_API_KEY` | fallback proxy key name |
+| `MEMOSYNE_HF_OFFLINE` | default `1`; avoids Hugging Face network checks after embedding models are cached |
+| `LLM_PROVIDER` | optional forced provider — see `llm_client.py` for the current set |
 | `CHAT_CATEGORY_KNOWLEDGE_PENALTY` | experimental AI-chat rerank penalty; default `1.0` |
+
+Provider-specific variables (local endpoint host, cloud API keys, base URLs, etc.) depend on which backend you choose. The canonical list lives in `Personal_Brain_DB/00_System/llm_client.py` and `.env.example`. Avoid hard-coding provider-specific names in public documentation; treat them as examples, not requirements.
 
 Use `.env.example` as a public template and keep real values in ignored local files.
 

@@ -125,9 +125,8 @@ memosyne rebuild
 
 ### Local LLM Calls Fail
 
-Ollama is only required for enrichment, contextualization, HyQE, and local chat. Start it before those workflows:
+A local LLM endpoint is only required for enrichment, contextualization, HyQE, and local chat. Memosyne does not bundle a runtime — start whichever local LLM server you use (Ollama, llama.cpp, LM Studio, vLLM, …) so the configured endpoint is reachable, then verify:
 
 ```bash
-ollama serve
 memosyne health
 ```

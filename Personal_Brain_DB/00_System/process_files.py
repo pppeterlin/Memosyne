@@ -23,12 +23,14 @@ from pathlib import Path
 from datetime import datetime
 
 # ─── 路徑設定 ───────────────────────────────────────────────
-BASE = Path(__file__).parent.parent
-GEMINI_SRC = BASE.parent / "gemini chat"
-NOTES_SRC  = BASE.parent / "notes"
+from artifacts import data_root
+BASE = data_root()
+SYSTEM_DIR  = Path(__file__).resolve().parent
+REPO_ROOT   = SYSTEM_DIR.parent.parent
+GEMINI_SRC = REPO_ROOT / "gemini chat"
+NOTES_SRC  = REPO_ROOT / "notes"
 GEMINI_DST = BASE / "20_AI_Chats" / "Gemini"
 JOURNAL_DST = BASE / "30_Journal"
-SYSTEM_DIR  = BASE / "00_System"
 
 try:
     import snappy
