@@ -994,7 +994,8 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
            route_top_k: int = 2,
            exclude_views: list[str] | None = None,
            decompose: bool = False,
-           decompose_model: str = "proxy:claude-opus-4-6") -> list[dict]:
+           decompose_model: str = "proxy:claude-opus-4-6",
+           walk: str = "deep") -> list[dict]:
     """
     三路 Hybrid search：Dense（ChromaDB）+ BM25 + Tapestry Graph → RRF 融合
     → ACT-R 認知衰減重排 → top_k 結果。
@@ -1080,6 +1081,18 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
     else:
         results = _rrf_merge_multi(ranked_lists)
 
+    # ── Graph walk: PPR (deep) | two-pass (fast) | off ───────────
+    # walk="deep"  → HippoRAG-style spreading activation; deepest signal, slowest
+    # walk="fast"  → two-pass walk: anchor → shared entity → other memory; ~5×
+    #                cheaper, useful for interactive queries and toggle ablations
+    # walk="off"   → no graph contribution; baseline for ablation
+    # env override: MEMOSYNE_WALK={deep,fast,off} wins over the function arg
+    # so callers without code access can switch.
+    import os as _os_walk
+    _walk = _os_walk.getenv("MEMOSYNE_WALK", walk).strip().lower()
+    if _walk not in {"deep", "fast", "off"}:
+        _walk = "deep"
+
     # ── PPR Spreading Activation（HippoRAG 2 — 傳播激發補充）──
     # 設計定位：PPR 是「輔助訊號」，不應獨立決定排名。
     # 做法：只對已在三路 RRF 結果中的文件 applied additive bonus（PPR score × alpha），
@@ -1089,7 +1102,7 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
     PPR_ALPHA = 0.015
     try:
         from tapestry import spreading_activation, TAPESTRY_DB
-        if TAPESTRY_DB.exists() and results:
+        if _walk == "deep" and TAPESTRY_DB.exists() and results:
             seed_paths = [r["path"] for r in results[:5]]
             query_entities = [
                 w for w in re.findall(r'[\u4e00-\u9fff]{2,}|[a-zA-Z][\w-]+', query)
@@ -1110,6 +1123,27 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
                     results.sort(key=lambda x: x["score"], reverse=True)
     except ImportError:
         pass
+
+    # ── Two-pass walk (fast graph contribution) ──────────────────
+    # Same additive-bonus model as PPR so they're swappable: only PPR or
+    # two-pass runs, never both, picked by `_walk`.
+    WALK_ALPHA = 0.015
+    if _walk == "fast" and results:
+        try:
+            from tapestry import two_pass_walk, TAPESTRY_DB as _TDB_W
+            if _TDB_W.exists():
+                seeds = [(r["path"], r["score"]) for r in results[:10]]
+                walk_contrib = two_pass_walk(seeds)
+                if walk_contrib:
+                    max_c = max(walk_contrib.values())
+                    if max_c > 0:
+                        for r in results:
+                            c = walk_contrib.get(r["path"], 0.0)
+                            if c > 0:
+                                r["score"] = round(r["score"] + WALK_ALPHA * (c / max_c), 4)
+                        results.sort(key=lambda x: x["score"], reverse=True)
+        except ImportError:
+            pass
 
     # ── Backlink Boost（v0.5）──
     # 結構性訊號：與多個 entity 相連的記憶獲得輕微乘性加權。
@@ -1427,6 +1461,9 @@ def main():
     parser.add_argument("--type",          type=str, default="",  help="篩選類型：note/chat/bio")
     parser.add_argument("--no-record-access", action="store_true",
                         help="搜尋測試不寫入 Chronicle access log（適合 validation / benchmark）")
+    parser.add_argument("--walk", choices=["deep", "fast", "off"], default="deep",
+                        help="graph walk strategy: deep=PPR spreading (default), "
+                             "fast=two-pass walk, off=skip graph contribution")
     parser.add_argument("--contextualize", action="store_true",
                         help="The Illumination — 生成語境化段落摘要（Contextual Retrieval）")
     parser.add_argument("--hyqe",          action="store_true",
@@ -1437,7 +1474,8 @@ def main():
 
     if args.query:
         results = search(args.query, args.top, args.type,
-                         record_access=not args.no_record_access)
+                         record_access=not args.no_record_access,
+                         walk=args.walk)
         if not results:
             print("The waters are still. No echoes found.")
             return
