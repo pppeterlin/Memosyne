@@ -145,3 +145,54 @@ If retrieval code changed, also run Eternal Mirror. If user-facing retrieval beh
 ## Hygiene Mode
 
 Use `--hygiene` when comparing retrieval quality. It excludes HyQE view chunks during evaluation so the system does not win by directly matching generated questions against themselves.
+
+## The Augury Replay (v0.5+)
+
+Golden eval pins synthetic regressions. Replay pins **real-usage** regressions
+by comparing what the live vault retrieves now against what it retrieved
+when the queries were originally captured.
+
+### Capture (opt-in)
+
+```bash
+export MEMOSYNE_CAPTURE_QUERIES=1
+# normal usage records (query, retrieved_paths, top_k, latency, source)
+# into Personal_Brain_DB/00_System/query_log.jsonl
+# PII (email / phone / long tokens / user-supplied terms) is scrubbed at
+# write time; nothing leaves the local machine.
+```
+
+`MEMOSYNE_QUERY_SCRUB_TERMS=name1,name2,...` adds custom redaction terms.
+
+### Export → Replay
+
+```bash
+memosyne query-log --export --since 7d > /tmp/baseline.jsonl
+memosyne query-log --replay /tmp/baseline.jsonl --top-k 10
+```
+
+Three drift metrics, all **path-level** (chunk_id schema changes do not
+distort comparisons):
+
+| Metric | What it tells you |
+|---|---|
+| `mean_jaccard@k`       | average overlap of retrieved memory paths |
+| `top1_stability`       | fraction of queries whose #1 result stayed identical |
+| `mean_latency_delta_ms`| current minus captured search latency |
+
+Side effects are suppressed during replay (no ACT-R writes, no recursive
+capture) so the act of measuring does not shift what's being measured.
+
+The "Top N regressions" table surfaces queries with the lowest jaccard —
+those are the debugging targets when a refactor moves the metric.
+
+### Toggle comparison
+
+`scripts/run_toggle_reports.sh` runs `memosyne eval --sample` under
+several configurations (`MEMOSYNE_WALK`, `MEMOSYNE_BACKLINK_COEF`) and
+writes results under `sample_vault/_eval/toggle_reports/`. Methodology
+proof on the public sample; private vault toggle reports stay local.
+
+For meaningful effect-size differentiation, run the same matrix against
+your private golden set or replay captured queries — the sample golden's
+N=5 sits below the noise floor for subtle multiplicative bonuses.
