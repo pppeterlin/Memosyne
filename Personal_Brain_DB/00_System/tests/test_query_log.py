@@ -208,10 +208,49 @@ class TestParseSince(unittest.TestCase):
 
 
 class TestReplay(unittest.TestCase):
+    """
+    Replay correctness is path-level by design (chunk_id is internal accounting
+    that v0.6 will change). These tests pin that contract without needing the
+    full vectorize import — we exercise the loader + jaccard helpers and the
+    empty-baseline short circuit.
+    """
 
-    def test_replay_stubs_not_implemented(self):
-        with self.assertRaises(NotImplementedError):
-            ql.replay(Path("/tmp/baseline.jsonl"))
+    def test_load_baseline_skips_malformed(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False, encoding="utf-8") as fh:
+            fh.write('{"schema": "wrong"}\n')
+            fh.write("not json\n")
+            fh.write('{"schema": "memosyne.query_log.v1", "query": "ok",'
+                     ' "retrieved_paths": ["a.md"]}\n')
+            path = Path(fh.name)
+        try:
+            events = ql._load_baseline(path)
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["query"], "ok")
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_load_baseline_missing_raises(self):
+        with self.assertRaises(FileNotFoundError):
+            ql._load_baseline(Path("/tmp/nonexistent-baseline-xyz.jsonl"))
+
+    def test_jaccard_helper(self):
+        self.assertEqual(ql._jaccard(set(), set()), 1.0)
+        self.assertEqual(ql._jaccard({"a"}, {"a"}), 1.0)
+        self.assertEqual(ql._jaccard({"a", "b"}, {"a"}), 0.5)
+        self.assertEqual(ql._jaccard({"a"}, {"b"}), 0.0)
+
+    def test_replay_empty_baseline_short_circuits(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False, encoding="utf-8") as fh:
+            fh.write("")
+            path = Path(fh.name)
+        try:
+            # Empty baseline must not even attempt to import vectorize.
+            report = ql.replay(path)
+            self.assertEqual(report["n_queries"], 0)
+            self.assertIsNone(report["mean_jaccard_at_k"])
+            self.assertEqual(report["regressions"], [])
+        finally:
+            path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

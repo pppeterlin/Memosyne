@@ -36,7 +36,9 @@ run "sample-vault-synthetic"  bash scripts/check_sample_vault_synthetic.sh
 
 # 2. 單元測試（不需要 kuzu / chromadb）
 if command -v python3 >/dev/null 2>&1; then
+  # pipefail propagates failure even though tail's exit code is 0
   run "unit-tests" bash -c '
+    set -o pipefail
     cd Personal_Brain_DB/00_System && \
     python3 -m unittest discover tests -v 2>&1 | tail -20
   '
