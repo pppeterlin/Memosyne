@@ -352,16 +352,17 @@ def _try_turn_aware_gemini_update(
     if not known:
         prior_turns = parser.split_turns(dst_content)
         if prior_turns:
-            record_turns([
-                {
-                    "turn_hash":   t.hash,
-                    "memory_uuid": dst_uuid,
-                    "memory_path": rel_path,
-                    "turn_index":  t.index,
-                    "source":      "gemini",
-                }
-                for t in prior_turns
-            ], enriched=True, embedded=True)  # assume prior turns were processed
+            if not dry_run:
+                record_turns([
+                    {
+                        "turn_hash":   t.hash,
+                        "memory_uuid": dst_uuid,
+                        "memory_path": rel_path,
+                        "turn_index":  t.index,
+                        "source":      "gemini",
+                    }
+                    for t in prior_turns
+                ], enriched=True, embedded=True)
             known = {t.hash for t in prior_turns}
 
     new_turns = diff_against_known(spring_turns, known)
@@ -613,12 +614,13 @@ def _try_turn_aware_journal_update(
     if not known:
         prior = parser.split_turns(dst_content)
         if prior:
-            record_turns([
-                {"turn_hash": t.hash, "memory_uuid": dst_uuid,
-                 "memory_path": rel_path, "turn_index": t.index,
-                 "source": "journal_append"}
-                for t in prior
-            ], enriched=True, embedded=True)
+            if not dry_run:
+                record_turns([
+                    {"turn_hash": t.hash, "memory_uuid": dst_uuid,
+                     "memory_path": rel_path, "turn_index": t.index,
+                     "source": "journal_append"}
+                    for t in prior
+                ], enriched=True, embedded=True)
             known = {t.hash for t in prior}
 
     new_turns = diff_against_known(spring_turns, known)
