@@ -1,0 +1,15 @@
+📿 Golden set : /Users/chun/Documents/Python/Memosyne/sample_vault/_eval/golden.yaml
+   Config     : baseline   top_k=10
+   Questions  : 5
+
+   Recall@1   : 0.200
+   Recall@5   : 0.800
+   Recall@10  : 1.000
+   MRR        : 0.495
+
+   Per-question:
+     ✅ @1      Aiko 是誰？她跟 Mira 的關係？
+     ◽ @2      Mira 對什麼食物過敏？
+     ◽ @7      Tokyo Slow Vol.2 的出發日期是哪一天？
+     ◽ @2      冷色為主的城市場景水彩配方有哪些？
+     ◽ @3      青鳥咖啡的老闆叫什麼名字？
