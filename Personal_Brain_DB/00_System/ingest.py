@@ -254,6 +254,199 @@ def _warn_conflict(spring_path: Path, dst: Path, spring_hash: str, dst_hash: str
     print(f"         • genuinely different memory?        → rename and re-ingest")
 
 
+# ─── v0.6 Phase 1: turn-aware update helpers ─────────────────
+
+def _extract_fm_field(content: str, field: str) -> str:
+    """Cheap regex pull of a frontmatter scalar (no nested structures)."""
+    if not content.startswith("---"):
+        return ""
+    end = content.find("\n---", 3)
+    if end == -1:
+        return ""
+    fm = content[3:end]
+    m = re.search(rf'^{re.escape(field)}:\s*["\']?([^"\'\n]+)', fm, re.MULTILINE)
+    return m.group(1).strip() if m else ""
+
+
+def _bump_date_updated(content: str, today_str: str) -> str:
+    """Set or insert date_updated in frontmatter."""
+    if not content.startswith("---"):
+        return content
+    end = content.find("\n---", 3)
+    if end == -1:
+        return content
+    fm = content[3:end]
+    body = content[end:]
+    if re.search(r'^date_updated:', fm, re.MULTILINE):
+        fm = re.sub(r'^date_updated:.*$', f'date_updated: {today_str}',
+                    fm, count=1, flags=re.MULTILINE)
+    else:
+        fm = fm.rstrip("\n") + f'\ndate_updated: {today_str}\n'
+    return "---" + fm + body
+
+
+def _clear_enriched_at(content: str) -> str:
+    """
+    Remove enriched_at so enrich.py picks the file up again on the next
+    Weaving pass. v0.6 Phase 1 re-enriches whole file on update; partial
+    turn-only enrichment is Phase 3 work.
+    """
+    if not content.startswith("---"):
+        return content
+    end = content.find("\n---", 3)
+    if end == -1:
+        return content
+    fm = content[3:end]
+    body = content[end:]
+    fm = re.sub(r'^enriched_at:.*\n?', '', fm, flags=re.MULTILINE)
+    return "---" + fm + body
+
+
+def _try_turn_aware_gemini_update(
+    spring_content: str,
+    dst: Path,
+    dst_content: str,
+    dry_run: bool,
+) -> IngestResult | None:
+    """
+    Phase 1: try to merge a re-imported Gemini file into the existing
+    vault copy. Returns:
+      - IngestResult(action="updated")      if new turns found + merged
+      - IngestResult(action="skipped_same") if turn diff is empty (all known)
+      - None                                 if the format doesn't parse —
+                                             caller should fall back to
+                                             the file-level conflict warning
+
+    Side effects on success:
+      - dst is overwritten with the new content (uuid preserved,
+        date_updated bumped, content_hash refreshed, enriched_at cleared
+        so enrich re-processes)
+      - turn_ledger gets every spring turn recorded (insert-or-ignore)
+      - any existing vector chunks for this path are scheduled for
+        refresh on the next vectorize run (caller's responsibility to
+        invoke vectorize.refresh_paths, since ingest doesn't talk to
+        Chroma directly)
+    """
+    try:
+        from turns import GeminiParser, diff_against_known
+        from turn_ledger import known_turn_hashes, record_turns
+    except ImportError:
+        return None
+
+    parser = GeminiParser()
+    spring_turns = parser.split_turns(spring_content)
+    if not spring_turns:
+        return None  # not a parseable Gemini export — fall back to conflict warn
+
+    dst_uuid = _extract_fm_field(dst_content, "uuid")
+    if not dst_uuid:
+        # No uuid to preserve — safer to treat as conflict than to mint
+        # a new uuid and risk Chronicle/Tapestry continuity issues.
+        return None
+
+    rel_path = str(dst.relative_to(BRAIN_DB)) if dst.is_absolute() else str(dst)
+    known = known_turn_hashes(memory_uuid=dst_uuid)
+
+    # First-time Gemini update: ledger has no prior turns recorded for
+    # this memory. Backfill the existing dst's turns so the diff is honest.
+    if not known:
+        prior_turns = parser.split_turns(dst_content)
+        if prior_turns:
+            record_turns([
+                {
+                    "turn_hash":   t.hash,
+                    "memory_uuid": dst_uuid,
+                    "memory_path": rel_path,
+                    "turn_index":  t.index,
+                    "source":      "gemini",
+                }
+                for t in prior_turns
+            ], enriched=True, embedded=True)  # assume prior turns were processed
+            known = {t.hash for t in prior_turns}
+
+    new_turns = diff_against_known(spring_turns, known)
+
+    if not new_turns:
+        # All spring turns already in ledger → genuinely a duplicate
+        return IngestResult(action="skipped_same", dst=dst,
+                            note="all turns already in ledger")
+
+    # Rebuild dst content from spring while preserving identity fields
+    from datetime import datetime as _dt
+    today = _dt.now().strftime("%Y-%m-%d")
+    merged = spring_content
+    # Replace any uuid in spring with dst's uuid to keep identity stable
+    if _extract_fm_field(spring_content, "uuid") != dst_uuid:
+        merged = re.sub(
+            r'^uuid:.*$',
+            f'uuid: "{dst_uuid}"',
+            merged,
+            count=1,
+            flags=re.MULTILINE,
+        )
+    merged = _bump_date_updated(merged, today)
+    merged = _clear_enriched_at(merged)
+    merged = _finalize_md(merged)  # refresh content_hash
+
+    if not dry_run:
+        dst.write_text(merged, encoding="utf-8")
+        # Record EVERY spring turn (insert-or-ignore preserves prior rows)
+        record_turns([
+            {
+                "turn_hash":   t.hash,
+                "memory_uuid": dst_uuid,
+                "memory_path": rel_path,
+                "turn_index":  t.index,
+                "source":      "gemini",
+            }
+            for t in spring_turns
+        ])
+        # Schedule chunk refresh — vectorize reads this list on next run
+        _mark_dirty_for_vectorize(rel_path)
+
+    try:
+        display = dst.relative_to(ROOT)
+    except ValueError:
+        display = dst
+    print(f"    ✦ Updated {display} (+{len(new_turns)}/{len(spring_turns)} turns)")
+    return IngestResult(
+        action="updated", dst=dst,
+        note=f"+{len(new_turns)} new turns of {len(spring_turns)} total",
+    )
+
+
+def _dirty_marker_path() -> Path:
+    """Where the 'these paths need vectorize refresh' list lives."""
+    try:
+        return artifact_path("dirty_paths")
+    except (TypeError, KeyError):
+        return SYSTEM_DIR / "dirty_paths.txt"
+
+
+def _mark_dirty_for_vectorize(rel_path: str) -> None:
+    """Append rel_path to the dirty list (deduplicated on next read)."""
+    marker = _dirty_marker_path()
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        existing: set[str] = set()
+        if marker.exists():
+            existing = {ln.strip() for ln in marker.read_text(encoding="utf-8").splitlines() if ln.strip()}
+        existing.add(rel_path)
+        marker.write_text("\n".join(sorted(existing)) + "\n", encoding="utf-8")
+    except OSError:
+        # Non-fatal — vectorize will still re-embed, just may leave a
+        # stale chunk or two until the next full --rebuild.
+        pass
+
+
+# Import artifact_path for the dirty marker; safe if missing.
+try:
+    from artifacts import artifact_path
+except ImportError:
+    def artifact_path(name: str) -> Path:  # type: ignore
+        return SYSTEM_DIR / {"dirty_paths": "dirty_paths.txt"}.get(name, name)
+
+
 def _finalize_md(content: str) -> str:
     """
     Ensure content_hash in frontmatter reflects the current body.
@@ -310,13 +503,18 @@ def route_pages(path: Path, dry_run: bool) -> IngestResult:
 
 def route_gemini(path: Path, dry_run: bool) -> IngestResult:
     """
-    複製 Gemini .md，補齊 frontmatter → 20_AI_Chats/Gemini/
+    Gemini .md → 20_AI_Chats/Gemini/
 
-    v0.6 Phase 0 changes only: detect divergence + warn + refuse to
-    archive. Turn-aware incremental update is wired in Phase 1 (next
-    batch) — until then a re-imported Gemini conversation with new
-    turns falls through to the conflict warning instead of silently
-    dropping content.
+    Three paths:
+      1. dst doesn't exist          → insert + record turns to ledger
+      2. dst exists, bodies match   → skipped_same
+      3. dst exists, bodies differ  → turn-aware update (Phase 1)
+         - parse spring turns, diff against ledger
+         - if 0 new turns: skipped_same (rare; usually means content
+           differs only in formatting)
+         - if >0 new turns: merge, preserve uuid, bump date_updated,
+           clear enriched_at, mark dirty for vectorize refresh
+         - if format unparseable: fall back to file-level conflict warn
     """
     dst = AI_CHAT_DST / path.name
     content = path.read_text(encoding="utf-8", errors="ignore")
@@ -329,13 +527,46 @@ def route_gemini(path: Path, dry_run: bool) -> IngestResult:
         if verdict == "same":
             _oracle_say("This memory already rests in the vault. Its echo endures.", indent=True)
             return IngestResult(action="skipped_same", dst=dst)
+
+        # Try turn-aware update before falling back to conflict warning
+        dst_content = dst.read_text(encoding="utf-8", errors="ignore")
+        update_result = _try_turn_aware_gemini_update(content, dst, dst_content, dry_run)
+        if update_result is not None:
+            # For first-time updates we record prior turns inside the helper;
+            # also record on insert below so all paths populate the ledger.
+            return update_result
+
+        # Format unparseable / uuid missing — file-level conflict warn
         _warn_conflict(path, dst, sh, dh)
         return IngestResult(action="conflict", dst=dst,
-                            note="gemini body diverged — turn-aware update pending Phase 1")
+                            note="gemini body diverged but turn parsing failed")
 
+    # Fresh insert
     if not dry_run:
         AI_CHAT_DST.mkdir(parents=True, exist_ok=True)
         dst.write_text(content, encoding="utf-8")
+        # Seed the ledger with this conversation's turns so future
+        # updates can do incremental diff cleanly.
+        try:
+            from turns import GeminiParser
+            from turn_ledger import record_turns
+            parser = GeminiParser()
+            turns_list = parser.split_turns(content)
+            uuid = _extract_fm_field(content, "uuid")
+            if uuid and turns_list:
+                rel = str(dst.relative_to(BRAIN_DB))
+                record_turns([
+                    {
+                        "turn_hash":   t.hash,
+                        "memory_uuid": uuid,
+                        "memory_path": rel,
+                        "turn_index":  t.index,
+                        "source":      "gemini",
+                    }
+                    for t in turns_list
+                ])
+        except ImportError:
+            pass
     print(f"    ✦ Inscribed to {dst.relative_to(ROOT)}")
     return IngestResult(action="inserted", dst=dst)
 

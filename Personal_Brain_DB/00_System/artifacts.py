@@ -117,6 +117,16 @@ ARTIFACTS: dict[str, Artifact] = {
                     "MEMOSYNE_CAPTURE_QUERIES=1 (default off).",
         legacy_shim=False,
     ),
+    "dirty_paths": Artifact(
+        key="dirty_paths",
+        relative_path="dirty_paths.txt",
+        kind="ephemeral marker",
+        privacy="private",
+        description="v0.6 turn-aware update marker — paths whose vault "
+                    "file changed and whose vector chunks need refresh. "
+                    "Consumed and cleared by vectorize.build_index().",
+        legacy_shim=False,
+    ),
 }
 
 
