@@ -87,3 +87,4 @@ docs/learning/
 # Sample vault derived artifacts (rebuilt from sample sources, never committed)
 sample_vault/_artifacts/
 sample_vault/_eval/toggle_reports/*.txt
+sample_vault/chroma_db/
