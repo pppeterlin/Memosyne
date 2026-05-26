@@ -604,16 +604,28 @@ def spreading_activation(
 
 # ─── Backfill：從現有記憶庫重建 Tapestry ──────────────────────
 
-def backfill_from_vault(verbose: bool = True) -> tuple[int, int]:
+def backfill_from_vault(
+    verbose: bool = True,
+    require_enriched: bool = False,
+) -> tuple[int, int]:
     """
-    掃描所有已增強（有 enriched_at）的 .md 記憶，重建完整 Tapestry。
+    掃描 vault 下所有 .md，用 The Deterministic Loom 抽 entity → 織入 Tapestry。
     回傳 (記憶數, 節點數)。
+
+    Args:
+        verbose: 印進度。
+        require_enriched: True 時只處理已有 `enriched_at:` 的檔案
+                          （舊行為，僅 LLM-enriched 才入圖）。
+                          False（v0.5 預設）時所有有 frontmatter
+                          或 body link 的檔案都會被處理 — 圖譜的
+                          骨架可以在 LLM 跑之前就先建好。
     """
-    import yaml
+    from link_extractor import extract_from_content
 
     EXCLUDE = {"00_System"}
     conn     = get_conn()
     mem_count = 0
+    skipped_no_entity = 0
 
     # 清空舊資料，重新建立
     for tbl in ["mem_person", "mem_location", "mem_event", "mem_period",
@@ -634,37 +646,26 @@ def backfill_from_vault(verbose: bool = True) -> tuple[int, int]:
         if md_file.name in {"README.md", ".cursorrules"}:
             continue
 
-        content = md_file.read_text(encoding="utf-8")
-        if "enriched_at:" not in content:
-            continue
-        if not content.startswith("---"):
-            continue
-
-        end = content.find("\n---", 3)
-        if end < 0:
-            continue
-        raw_fm = content[3:end]
-        clean  = [ln for ln in raw_fm.split("\n") if not ln.strip().startswith("#")]
         try:
-            fm = yaml.safe_load("\n".join(clean)) or {}
-        except Exception:
-            continue
-        if not isinstance(fm, dict):
+            content = md_file.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
             continue
 
-        ents = fm.get("entities") or {}
-        if not isinstance(ents, dict):
-            ents = {}
+        if require_enriched and "enriched_at:" not in content:
+            continue
 
-        enrichment = {
-            "entities": {
-                "locations": ents.get("locations") or [],
-                "people":    ents.get("people")    or [],
-                "events":    ents.get("events")    or [],
-            },
-            "period":         fm.get("period", "") or "",
-            "personal_facts": fm.get("personal_facts") or [],
-        }
+        # The Deterministic Loom — 不需要 LLM 也能抽。
+        enrichment = extract_from_content(content)
+
+        # 完全沒任何 entity / period → 仍建 Memory 節點（讓 orphan 偵測有依據），
+        # 但跳過織邊的成本。
+        ents = enrichment.get("entities", {})
+        has_any = bool(
+            ents.get("people") or ents.get("locations") or ents.get("events")
+            or enrichment.get("period")
+        )
+        if not has_any:
+            skipped_no_entity += 1
 
         rel_path = str(md_file.relative_to(BASE))
         weave_memory(conn, rel_path, enrichment)
@@ -673,7 +674,7 @@ def backfill_from_vault(verbose: bool = True) -> tuple[int, int]:
     # 統計
     stats = tapestry_stats(conn)
     if verbose:
-        print(f"[TAPESTRY] 織入 {mem_count} 份記憶")
+        print(f"[TAPESTRY] 織入 {mem_count} 份記憶（{skipped_no_entity} 份無 entity，僅建 Memory 節點）")
         print(f"[TAPESTRY] 節點：{stats['nodes']}  邊：{stats['edges']}")
         print(f"[TAPESTRY] 節點類型：{stats['by_type']}")
         print(f"[TAPESTRY] DB 路徑：{TAPESTRY_DB}")
@@ -880,6 +881,161 @@ def get_entity_timeline(entity_name: str,
     return results
 
 
+def get_memory_edge_counts(
+    paths: list[str] | None = None,
+    conn: kuzu.Connection | None = None,
+) -> dict[str, int]:
+    """
+    回傳 {memory_path: 出邊數}。
+
+    出邊 = Memory 直接連到的 Person/Location/Event/Period 邊數總和。
+    對搜尋結果做 backlink boost 用：與多個 entity 相關聯的記憶 →
+    結構上更「中心」，給予輕微加權。
+
+    Args:
+        paths: 若提供，只查這些 path；None 則查全部 Memory。
+        conn:  外部傳入的 connection；None 則自開自關。
+
+    回傳：
+        {path: int}。未在圖中的 path 不會出現在 dict 中（呼叫端應視為 0）。
+    """
+    _own = conn is None
+    if _own:
+        if not TAPESTRY_DB.exists():
+            return {}
+        conn = get_conn()
+
+    counts: dict[str, int] = {}
+    rels = ["mem_person", "mem_location", "mem_event", "mem_period"]
+
+    try:
+        if paths is None:
+            # 全表查詢
+            for rel in rels:
+                try:
+                    r = conn.execute(
+                        f"MATCH (m:Memory)-[:{rel}]->() "
+                        f"RETURN m.path AS path, COUNT(*) AS c"
+                    )
+                    df = r.get_as_df()
+                    for _, row in df.iterrows():
+                        p = row["path"]
+                        counts[p] = counts.get(p, 0) + int(row["c"])
+                except Exception:
+                    continue
+        else:
+            # 限定子集
+            for path in paths:
+                total = 0
+                for rel in rels:
+                    try:
+                        r = conn.execute(
+                            f"MATCH (m:Memory {{path: $p}})-[:{rel}]->() "
+                            f"RETURN COUNT(*) AS c",
+                            {"p": path},
+                        )
+                        df = r.get_as_df()
+                        if len(df) > 0:
+                            total += int(df["c"].iloc[0])
+                    except Exception:
+                        continue
+                if total > 0:
+                    counts[path] = total
+    finally:
+        if _own:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    return counts
+
+
+def two_pass_walk(
+    seed_paths_with_scores: list[tuple[str, float]],
+    *,
+    max_neighbors_per_entity: int = 50,
+    conn: kuzu.Connection | None = None,
+) -> dict[str, float]:
+    """
+    Cheap structural walk: anchor memory → shared entity → other memory.
+
+    Designed as a fast complement to spreading_activation (PPR):
+
+    - PPR diffuses scores across the whole graph with random restarts;
+      gives the deepest signal but is the slowest path in search.
+    - two_pass_walk follows exactly two graph hops with a per-entity
+      fan-out cap; gives a "what else mentions the same things" signal
+      in O(seeds × entities × cap) time without any matrix algebra.
+
+    Score model: neighbor_score = anchor_score / (1 + hop) with hop=2,
+    so each surfaced memory gets at most anchor / 3 added to its score
+    via subsequent boost in search(). Multiple seeds reaching the same
+    neighbor accumulate (we take max, not sum, to avoid runaway).
+
+    Args:
+        seed_paths_with_scores: [(path, score), ...] — anchor results from
+            the dense / BM25 / graph RRF merge. score is the post-RRF score.
+        max_neighbors_per_entity: cap on fan-out to keep walks bounded
+            even when a popular entity (e.g. a frequent person) is hit.
+
+    Returns:
+        {neighbor_path: contribution_score}. Seed paths are excluded
+        (caller already has them). Empty dict if the Tapestry is empty.
+    """
+    if not seed_paths_with_scores:
+        return {}
+
+    _own = conn is None
+    if _own:
+        if not TAPESTRY_DB.exists():
+            return {}
+        conn = get_conn()
+
+    rels = ["mem_person", "mem_location", "mem_event", "mem_period"]
+    seed_set = {p for p, _ in seed_paths_with_scores}
+    contributions: dict[str, float] = {}
+
+    try:
+        for seed_path, anchor_score in seed_paths_with_scores:
+            if anchor_score <= 0:
+                continue
+            walk_bonus = anchor_score / 3.0  # 1 / (1 + hop) with hop=2
+
+            for rel in rels:
+                try:
+                    # mem→entity→mem in one Cypher hop pair.
+                    # LIMIT caps fan-out per (seed, rel) pair.
+                    r = conn.execute(
+                        f"MATCH (m:Memory {{path: $p}})-[:{rel}]->(e)"
+                        f"<-[:{rel}]-(other:Memory) "
+                        f"WHERE other.path <> $p "
+                        f"RETURN DISTINCT other.path AS path "
+                        f"LIMIT $lim",
+                        {"p": seed_path, "lim": max_neighbors_per_entity},
+                    )
+                    df = r.get_as_df()
+                    for _, row in df.iterrows():
+                        np_ = row["path"]
+                        if np_ in seed_set:
+                            continue
+                        prev = contributions.get(np_, 0.0)
+                        # max-aggregation: prevent one heavily-anchored
+                        # neighbor from dominating via many seeds.
+                        if walk_bonus > prev:
+                            contributions[np_] = walk_bonus
+                except Exception:
+                    continue
+    finally:
+        if _own:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    return contributions
+
+
 def _rel_endpoints(rel: str) -> tuple[str, str]:
     """回傳 (from_label, to_label)。"""
     mapping = {
@@ -900,6 +1056,8 @@ if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser(description="Memosyne Tapestry — kuzu 圖拓樸")
     ap.add_argument("--backfill", action="store_true", help="從現有記憶庫重建 Tapestry")
+    ap.add_argument("--require-enriched", action="store_true",
+                    help="只處理已有 enriched_at 的檔案（舊行為；預設不需要）")
     ap.add_argument("--stats",    action="store_true", help="顯示統計")
     ap.add_argument("--search",   type=str, default="", help="圖搜尋測試（逗號分隔關鍵詞）")
     ap.add_argument("--ppr",      type=str, default="", help="PPR 擴散測試（逗號分隔 memory path）")
@@ -907,11 +1065,13 @@ if __name__ == "__main__":
                     help="The Two Rivers — 既有邊回填時間戳")
     ap.add_argument("--timeline", type=str, default="",
                     help="查詢某實體（Person/Location/Event）的時間線")
+    ap.add_argument("--edge-counts", action="store_true",
+                    help="印每份記憶的 entity 連結數（backlink boost 用）")
     args = ap.parse_args()
 
     if args.backfill:
         print("[TAPESTRY] The Grand Weaving begins — rebuilding from the Vault...")
-        backfill_from_vault(verbose=True)
+        backfill_from_vault(verbose=True, require_enriched=args.require_enriched)
 
     elif args.stats:
         conn  = get_conn()
@@ -953,6 +1113,16 @@ if __name__ == "__main__":
         else:
             for i, (path, score) in enumerate(results, 1):
                 print(f"  #{i} PPR={score:.6f}  {path}")
+
+    elif args.edge_counts:
+        counts = get_memory_edge_counts()
+        if not counts:
+            print("[TAPESTRY] The waters are still. No edges yet.")
+        else:
+            ranked = sorted(counts.items(), key=lambda x: -x[1])
+            print(f"[TAPESTRY] Memory edge counts — top 20 of {len(counts)}:")
+            for path, c in ranked[:20]:
+                print(f"  {c:3d}  {path}")
 
     else:
         ap.print_help()

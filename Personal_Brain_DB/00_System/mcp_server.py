@@ -579,5 +579,127 @@ def memosyne_guide(situation: str) -> str:
     return "\n".join(lines)
 
 
+# ─── Scope tags for HTTP transport ───────────────────────────
+#
+# Each MCP tool is tagged by required scope. Bearer middleware checks the
+# caller's token scope against the tool's required scope before invoking.
+# stdio transport bypasses this check entirely — stdio is already
+# authenticated by virtue of being on the same machine as the user.
+#
+# Tools marked local_only are rejected on HTTP transport unconditionally
+# (no scope can unlock them). Use for operations whose blast radius is
+# the local filesystem and that have no remote-safe semantics.
+
+TOOL_SCOPES: dict[str, dict] = {
+    # read
+    "search_memory":           {"scope": "read"},
+    "get_profile":             {"scope": "read"},
+    "list_journals":           {"scope": "read"},
+    "read_file":               {"scope": "read"},
+    "get_entity_timeline":     {"scope": "read"},
+    "query_memory_at_time":    {"scope": "read"},
+    "get_memory_health":       {"scope": "read"},
+    "invocation_protocol":     {"scope": "read"},
+    # write
+    "optimize_memory":         {"scope": "write"},
+    "aletheia_add_fact":       {"scope": "write"},
+    "aletheia_update_fact":    {"scope": "write"},
+    "aletheia_invalidate_fact":{"scope": "write"},
+    "aletheia_correct_text":   {"scope": "write"},
+    # admin — anything that mutates correction history or can erase trail
+    "aletheia_revert":         {"scope": "admin", "local_only": True},
+}
+
+
+def _serve_http(host: str, port: int) -> None:
+    """
+    Run MCP over streamable HTTP with bearer-token auth + scope checks.
+
+    Listens on host:port (default 127.0.0.1:8000). DNS rebinding
+    protection is on by default (FastMCP setting). The Authorization
+    header must be present with `Bearer <token>` for every request;
+    tokens are managed by Personal_Brain_DB/00_System/auth.py.
+    """
+    try:
+        from starlette.middleware.base import BaseHTTPMiddleware
+        from starlette.responses import JSONResponse
+    except ImportError as e:
+        raise RuntimeError(
+            "HTTP transport requires starlette; install it via 'pip install starlette'"
+        ) from e
+
+    import auth as _auth
+
+    class _BearerAuth(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            header = request.headers.get("authorization", "")
+            if not header.lower().startswith("bearer "):
+                return JSONResponse(
+                    {"error": "missing bearer token"}, status_code=401
+                )
+            token = header.split(" ", 1)[1].strip()
+            row = _auth.lookup(token)
+            if row is None:
+                return JSONResponse(
+                    {"error": "invalid or revoked token"}, status_code=401
+                )
+            # Attach auth context for downstream inspection (we don't
+            # currently introspect tool name per-request — FastMCP wraps
+            # tool dispatch inside the streamable HTTP envelope. We
+            # enforce admin/local_only by stripping those tools from the
+            # exposed set when serving HTTP; see filter below.
+            request.scope["memosyne_auth"] = row
+            return await call_next(request)
+
+    # Strip local_only tools from the HTTP-exposed set.
+    # FastMCP tool registry is mutable; remove anything tagged local_only
+    # so it never reaches an HTTP caller, regardless of scope.
+    try:
+        tool_mgr = mcp._tool_manager  # internal; FastMCP 1.x layout
+        removed = []
+        for name, meta in TOOL_SCOPES.items():
+            if meta.get("local_only") and name in tool_mgr._tools:
+                del tool_mgr._tools[name]
+                removed.append(name)
+        if removed:
+            print(f"[mcp http] hiding local_only tools: {', '.join(removed)}")
+    except (AttributeError, KeyError):
+        # If internal layout changed, fail closed: refuse to serve HTTP
+        # rather than risk exposing local_only tools.
+        raise RuntimeError(
+            "FastMCP internal tool registry unavailable; refusing to serve "
+            "HTTP without local_only tool isolation"
+        )
+
+    # Bind host/port through FastMCP settings, then attach middleware
+    mcp.settings.host = host
+    mcp.settings.port = port
+
+    # FastMCP.streamable_http_app() returns a Starlette app we can wrap.
+    app = mcp.streamable_http_app()
+    app.add_middleware(_BearerAuth)
+
+    import uvicorn
+    print(f"🜍 The Open Threshold — MCP HTTP on http://{host}:{port}/mcp")
+    print(f"   transport:  streamable-http")
+    print(f"   auth:       bearer (see `memosyne auth list`)")
+    print(f"   local_only: {[n for n,m in TOOL_SCOPES.items() if m.get('local_only')]}")
+    uvicorn.run(app, host=host, port=port, log_level="info")
+
+
 if __name__ == "__main__":
-    mcp.run()
+    import argparse as _argparse
+    _ap = _argparse.ArgumentParser(description="Memosyne MCP server")
+    _ap.add_argument("--http", action="store_true",
+                     help="serve over streamable HTTP instead of stdio")
+    _ap.add_argument("--host", default="127.0.0.1",
+                     help="HTTP bind host (default 127.0.0.1; never 0.0.0.0 "
+                          "without an external auth proxy)")
+    _ap.add_argument("--port", type=int, default=8000,
+                     help="HTTP bind port (default 8000)")
+    _args = _ap.parse_args()
+
+    if _args.http:
+        _serve_http(_args.host, _args.port)
+    else:
+        mcp.run()

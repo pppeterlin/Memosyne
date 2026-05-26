@@ -521,6 +521,16 @@ def enrich_all(model: str, rebuild: bool, dry_run: bool, target_file: str | None
         except ImportError:
             tapestry_conn = None
 
+    # The Deterministic Loom — pure-regex extraction，LLM 前先抽。
+    # v0.5：LLM 退到「補強」，frontmatter / body 中已結構化的引用一律保留。
+    try:
+        from link_extractor import extract_from_content as _det_extract
+        from link_extractor import merge_extractions as _merge_ext
+    except ImportError:
+        _det_extract = None
+        _merge_ext = None
+    det_added_entities = 0
+
     print(f"[ENRICH] 掃描到 {total} 個記憶檔案，模型：{model}")
     if dry_run:
         print("[ENRICH] DRY-RUN 模式，不實際寫入\n")
@@ -574,9 +584,29 @@ def enrich_all(model: str, rebuild: bool, dry_run: bool, target_file: str | None
             done += 1
 
             # ── 織入 Tapestry ──────────────────────────────
+            # v0.5 The Self-Weaving Tapestry：
+            # LLM enrichment + deterministic extraction 取聯集後織入。
+            # Frontmatter 仍只寫 LLM 結果（保留 Oracle 的 ground-truth 契約），
+            # 但圖譜會吸收 [[wikilink]] / @mention 等 LLM 可能漏抽的訊號。
             if tapestry_conn is not None:
                 rel_path = str(path.relative_to(BASE))
-                _weave(tapestry_conn, rel_path, enrichment)
+                weave_payload = enrichment
+                if _det_extract is not None and _merge_ext is not None:
+                    try:
+                        det = _det_extract(content)
+                        # 比對 LLM 沒抽到但 deterministic 抓到的 entity 數
+                        llm_ents = (enrichment.get("entities") or {})
+                        det_ents = (det.get("entities") or {})
+                        for field in ("people", "locations", "events"):
+                            new = set(det_ents.get(field, [])) - set(llm_ents.get(field, []))
+                            det_added_entities += len(new)
+                        # merge_extractions(a, b)：b 蓋 a 的 scalar，entities 聯集。
+                        # 把 LLM 當作 b（優先 scalar），deterministic 當作 a。
+                        weave_payload = _merge_ext(det, enrichment)
+                    except Exception:
+                        # 任何抽取失敗都回退到原 enrichment
+                        weave_payload = enrichment
+                _weave(tapestry_conn, rel_path, weave_payload)
 
         except Exception as e:
             print(f"ERROR: {e}")
@@ -586,6 +616,8 @@ def enrich_all(model: str, rebuild: bool, dry_run: bool, target_file: str | None
         from tapestry import tapestry_stats
         stats = tapestry_stats(tapestry_conn)
         print(f"[ENRICH] Tapestry 已更新：{stats['nodes']} nodes, {stats['edges']} edges")
+        if det_added_entities > 0:
+            print(f"[ENRICH] The Deterministic Loom 補進 {det_added_entities} 個 LLM 漏抽的 entity 引用")
 
     print(f"\n[ENRICH] 完成：{done} 增強，{skipped} 跳過，{errors} 錯誤")
 
