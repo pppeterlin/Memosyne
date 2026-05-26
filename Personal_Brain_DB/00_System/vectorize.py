@@ -652,6 +652,55 @@ def collect_all_chunks() -> list[dict]:
     return all_chunks
 
 
+def refresh_paths(paths: list[str]) -> int:
+    """
+    Delete every chunk whose metadata.path is in `paths`. Used by the
+    v0.6 dirty-list flow: ingest writes a path to `dirty_paths.txt`
+    when a file was turn-aware-updated; the next build_index call
+    refreshes those chunks instead of treating them as already-indexed.
+
+    Returns the number of chunks deleted.
+    """
+    if not paths:
+        return 0
+    try:
+        client, col = get_collection(reset=False)
+    except Exception:
+        return 0
+    deleted = 0
+    for p in paths:
+        try:
+            # Chroma's delete(where=...) requires an actual filter dict
+            existing = col.get(where={"path": p}, include=[])
+            ids = existing.get("ids") or []
+            if ids:
+                col.delete(ids=ids)
+                deleted += len(ids)
+        except Exception:
+            continue
+    return deleted
+
+
+def _consume_dirty_paths() -> list[str]:
+    """
+    Read + truncate the dirty-paths marker file written by ingest's
+    turn-aware update path. Returns the list of paths and clears the
+    file so the same paths aren't refreshed twice.
+    """
+    try:
+        marker = artifact_path("dirty_paths")
+    except (TypeError, KeyError):
+        marker = Path(__file__).parent / "dirty_paths.txt"
+    if not marker.exists():
+        return []
+    try:
+        paths = [ln.strip() for ln in marker.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        marker.unlink()
+        return paths
+    except OSError:
+        return []
+
+
 def build_index(rebuild: bool = False):
     print(f"[VECTOR] ChromaDB 路徑：{CHROMA_DIR}")
     print(f"[VECTOR] Embedding 模型：{EMBED_MODEL}")
@@ -660,6 +709,13 @@ def build_index(rebuild: bool = False):
     client, col = get_collection(reset=rebuild)
     if rebuild:
         print("[VECTOR] 已清空舊索引，重建中...\n")
+
+    # v0.6: refresh paths that ingest marked dirty (turn-aware updates)
+    if not rebuild:
+        dirty = _consume_dirty_paths()
+        if dirty:
+            n = refresh_paths(dirty)
+            print(f"[VECTOR] Refreshed {n} stale chunks across {len(dirty)} updated paths\n")
 
     existing_ids = set(col.get(include=[])["ids"])
     all_chunks   = collect_all_chunks()

@@ -23,6 +23,8 @@ Memosyne — The Spring Ritual (ingest.py)
             Urania（知識）    → 50_Knowledge/
 """
 
+from __future__ import annotations
+
 import os
 import re
 import sys
@@ -144,21 +146,331 @@ def _quick_fm_field(content: str, field: str) -> str:
 
 # ─── 路由：The Discernment ───────────────────────────────────
 
-def route_pages(path: Path, dry_run: bool) -> Optional[Path]:
+# ─── v0.6: content-hash aware result type ─────────────────────
+#
+# Pre-v0.6 routers returned Optional[Path]: a path on success-or-skip,
+# None on rejection. main() then unconditionally archived the spring
+# source whenever the router returned a path — which silently dropped
+# updated content when filename matched but body differed.
+#
+# v0.6 splits "this ingestion happened" from "the spring source should
+# be archived". A conflict (same filename, different body, no turn-aware
+# update path) keeps the spring source in place so the user can decide.
+
+from dataclasses import dataclass
+
+@dataclass
+class IngestResult:
+    action: str          # inserted | skipped_same | updated | conflict | rejected
+    dst:    Optional[Path]
+    note:   str = ""
+
+    @property
+    def should_archive(self) -> bool:
+        """Spring source moves to _processed/ unless we hit a conflict."""
+        return self.action in ("inserted", "skipped_same", "updated")
+
+    @property
+    def needs_followup(self) -> bool:
+        """Should enrich + vectorize run for this file?"""
+        return self.action in ("inserted", "updated")
+
+
+def _extract_content_hash_from_frontmatter(content: str) -> str:
+    """
+    Return the content_hash field declared in the file's frontmatter,
+    or "" if absent. Cheap regex — avoids importing yaml here.
+    """
+    if not content.startswith("---"):
+        return ""
+    end = content.find("\n---", 3)
+    if end == -1:
+        return ""
+    fm = content[3:end]
+    m = re.search(r'^content_hash:\s*["\']?([^"\'\n]+)', fm, re.MULTILINE)
+    return m.group(1).strip() if m else ""
+
+
+def _inject_or_replace_content_hash(content: str, new_hash: str) -> str:
+    """
+    Ensure frontmatter contains `content_hash: "<new_hash>"`.
+    Adds if missing, replaces if present. Leaves body untouched.
+    Requires content to already have frontmatter; caller should check.
+    """
+    if not content.startswith("---"):
+        return content
+    end = content.find("\n---", 3)
+    if end == -1:
+        return content
+    fm = content[3:end]
+    body = content[end:]  # includes the closing ---
+
+    if "content_hash:" in fm:
+        fm = re.sub(
+            r'^content_hash:.*$',
+            f'content_hash: "{new_hash}"',
+            fm,
+            count=1,
+            flags=re.MULTILINE,
+        )
+    else:
+        # Insert before the closing ---; keep one trailing newline
+        fm = fm.rstrip("\n") + f'\ncontent_hash: "{new_hash}"\n'
+    return "---" + fm + body
+
+
+def _classify_against_dst(spring_content: str, dst: Path) -> tuple[str, str, str]:
+    """
+    Compare a freshly-read spring file against an existing vault file.
+
+    Returns (verdict, spring_hash, dst_hash) where verdict is one of:
+        same      — bodies match; safe to skip
+        diverged  — bodies differ; needs Phase-1 turn-aware path or warn
+
+    Pure function — no IO beyond reading dst.
+    """
+    from content_hash import body_hash as _body_hash
+    spring_hash = _body_hash(spring_content)
+    try:
+        dst_content = dst.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return "diverged", spring_hash, ""
+    declared = _extract_content_hash_from_frontmatter(dst_content)
+    dst_hash = declared or _body_hash(dst_content)
+    if spring_hash == dst_hash:
+        return "same", spring_hash, dst_hash
+    return "diverged", spring_hash, dst_hash
+
+
+def _warn_conflict(spring_path: Path, dst: Path, spring_hash: str, dst_hash: str) -> None:
+    """Phase 0: surface a divergence loudly so the user can intervene."""
+    print(f"    ⚠  Conflict: {spring_path.name} differs from the vault copy.")
+    print(f"       vault path:  {dst.relative_to(ROOT) if dst.is_absolute() else dst}")
+    print(f"       spring hash: {spring_hash[:23]}…")
+    print(f"       vault hash:  {dst_hash[:23]}…")
+    print(f"       The spring source is NOT archived — review and decide:")
+    print(f"         • re-export accidentally?            → delete {spring_path.name} from spring/")
+    print(f"         • intentional update of a thread?    → wait for turn-aware update (v0.6 Phase 1)")
+    print(f"         • genuinely different memory?        → rename and re-ingest")
+
+
+# ─── v0.6 Phase 1: turn-aware update helpers ─────────────────
+
+def _extract_fm_field(content: str, field: str) -> str:
+    """Cheap regex pull of a frontmatter scalar (no nested structures)."""
+    if not content.startswith("---"):
+        return ""
+    end = content.find("\n---", 3)
+    if end == -1:
+        return ""
+    fm = content[3:end]
+    m = re.search(rf'^{re.escape(field)}:\s*["\']?([^"\'\n]+)', fm, re.MULTILINE)
+    return m.group(1).strip() if m else ""
+
+
+def _bump_date_updated(content: str, today_str: str) -> str:
+    """Set or insert date_updated in frontmatter."""
+    if not content.startswith("---"):
+        return content
+    end = content.find("\n---", 3)
+    if end == -1:
+        return content
+    fm = content[3:end]
+    body = content[end:]
+    if re.search(r'^date_updated:', fm, re.MULTILINE):
+        fm = re.sub(r'^date_updated:.*$', f'date_updated: {today_str}',
+                    fm, count=1, flags=re.MULTILINE)
+    else:
+        fm = fm.rstrip("\n") + f'\ndate_updated: {today_str}\n'
+    return "---" + fm + body
+
+
+def _clear_enriched_at(content: str) -> str:
+    """
+    Remove enriched_at so enrich.py picks the file up again on the next
+    Weaving pass. v0.6 Phase 1 re-enriches whole file on update; partial
+    turn-only enrichment is Phase 3 work.
+    """
+    if not content.startswith("---"):
+        return content
+    end = content.find("\n---", 3)
+    if end == -1:
+        return content
+    fm = content[3:end]
+    body = content[end:]
+    fm = re.sub(r'^enriched_at:.*\n?', '', fm, flags=re.MULTILINE)
+    return "---" + fm + body
+
+
+def _try_turn_aware_gemini_update(
+    spring_content: str,
+    dst: Path,
+    dst_content: str,
+    dry_run: bool,
+) -> IngestResult | None:
+    """
+    Phase 1: try to merge a re-imported Gemini file into the existing
+    vault copy. Returns:
+      - IngestResult(action="updated")      if new turns found + merged
+      - IngestResult(action="skipped_same") if turn diff is empty (all known)
+      - None                                 if the format doesn't parse —
+                                             caller should fall back to
+                                             the file-level conflict warning
+
+    Side effects on success:
+      - dst is overwritten with the new content (uuid preserved,
+        date_updated bumped, content_hash refreshed, enriched_at cleared
+        so enrich re-processes)
+      - turn_ledger gets every spring turn recorded (insert-or-ignore)
+      - any existing vector chunks for this path are scheduled for
+        refresh on the next vectorize run (caller's responsibility to
+        invoke vectorize.refresh_paths, since ingest doesn't talk to
+        Chroma directly)
+    """
+    try:
+        from turns import GeminiParser, diff_against_known
+        from turn_ledger import known_turn_hashes, record_turns
+    except ImportError:
+        return None
+
+    parser = GeminiParser()
+    spring_turns = parser.split_turns(spring_content)
+    if not spring_turns:
+        return None  # not a parseable Gemini export — fall back to conflict warn
+
+    dst_uuid = _extract_fm_field(dst_content, "uuid")
+    if not dst_uuid:
+        # No uuid to preserve — safer to treat as conflict than to mint
+        # a new uuid and risk Chronicle/Tapestry continuity issues.
+        return None
+
+    rel_path = str(dst.relative_to(BRAIN_DB)) if dst.is_absolute() else str(dst)
+    known = known_turn_hashes(memory_uuid=dst_uuid)
+
+    # First-time Gemini update: ledger has no prior turns recorded for
+    # this memory. Backfill the existing dst's turns so the diff is honest.
+    if not known:
+        prior_turns = parser.split_turns(dst_content)
+        if prior_turns:
+            if not dry_run:
+                record_turns([
+                    {
+                        "turn_hash":   t.hash,
+                        "memory_uuid": dst_uuid,
+                        "memory_path": rel_path,
+                        "turn_index":  t.index,
+                        "source":      "gemini",
+                    }
+                    for t in prior_turns
+                ], enriched=True, embedded=True)
+            known = {t.hash for t in prior_turns}
+
+    new_turns = diff_against_known(spring_turns, known)
+
+    if not new_turns:
+        # All spring turns already in ledger → genuinely a duplicate
+        return IngestResult(action="skipped_same", dst=dst,
+                            note="all turns already in ledger")
+
+    # Rebuild dst content from spring while preserving identity fields
+    from datetime import datetime as _dt
+    today = _dt.now().strftime("%Y-%m-%d")
+    merged = spring_content
+    # Replace any uuid in spring with dst's uuid to keep identity stable
+    if _extract_fm_field(spring_content, "uuid") != dst_uuid:
+        merged = re.sub(
+            r'^uuid:.*$',
+            f'uuid: "{dst_uuid}"',
+            merged,
+            count=1,
+            flags=re.MULTILINE,
+        )
+    merged = _bump_date_updated(merged, today)
+    merged = _clear_enriched_at(merged)
+    merged = _finalize_md(merged)  # refresh content_hash
+
+    if not dry_run:
+        dst.write_text(merged, encoding="utf-8")
+        # Record EVERY spring turn (insert-or-ignore preserves prior rows)
+        record_turns([
+            {
+                "turn_hash":   t.hash,
+                "memory_uuid": dst_uuid,
+                "memory_path": rel_path,
+                "turn_index":  t.index,
+                "source":      "gemini",
+            }
+            for t in spring_turns
+        ])
+        # Schedule chunk refresh — vectorize reads this list on next run
+        _mark_dirty_for_vectorize(rel_path)
+
+    try:
+        display = dst.relative_to(ROOT)
+    except ValueError:
+        display = dst
+    print(f"    ✦ Updated {display} (+{len(new_turns)}/{len(spring_turns)} turns)")
+    return IngestResult(
+        action="updated", dst=dst,
+        note=f"+{len(new_turns)} new turns of {len(spring_turns)} total",
+    )
+
+
+def _dirty_marker_path() -> Path:
+    """Where the 'these paths need vectorize refresh' list lives."""
+    try:
+        return artifact_path("dirty_paths")
+    except (TypeError, KeyError):
+        return SYSTEM_DIR / "dirty_paths.txt"
+
+
+def _mark_dirty_for_vectorize(rel_path: str) -> None:
+    """Append rel_path to the dirty list (deduplicated on next read)."""
+    marker = _dirty_marker_path()
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        existing: set[str] = set()
+        if marker.exists():
+            existing = {ln.strip() for ln in marker.read_text(encoding="utf-8").splitlines() if ln.strip()}
+        existing.add(rel_path)
+        marker.write_text("\n".join(sorted(existing)) + "\n", encoding="utf-8")
+    except OSError:
+        # Non-fatal — vectorize will still re-embed, just may leave a
+        # stale chunk or two until the next full --rebuild.
+        pass
+
+
+# Import artifact_path for the dirty marker; safe if missing.
+try:
+    from artifacts import artifact_path
+except ImportError:
+    def artifact_path(name: str) -> Path:  # type: ignore
+        return SYSTEM_DIR / {"dirty_paths": "dirty_paths.txt"}.get(name, name)
+
+
+def _finalize_md(content: str) -> str:
+    """
+    Ensure content_hash in frontmatter reflects the current body.
+    Idempotent — recomputes hash before writing so re-saves stay accurate.
+    """
+    from content_hash import body_hash
+    h = body_hash(content)
+    if content.startswith("---"):
+        return _inject_or_replace_content_hash(content, h)
+    return content
+
+
+def route_pages(path: Path, dry_run: bool) -> IngestResult:
     """提取 .pages 文字 → 30_Journal/{year}/"""
     text = _extract_pages_text(path)
     if not text.strip():
         _oracle_say(f"The fragment '{path.name}' is silent — no echoes found. Returned to the mortal world.")
-        return None
+        return IngestResult(action="rejected", dst=None, note="empty pages extraction")
 
     date_str, year = _infer_date(path.stem)
     out_dir  = JOURNAL_DST / year
     dst_name = re.sub(r'\.pages$', '.md', path.name, flags=re.IGNORECASE)
     dst      = out_dir / dst_name
-
-    if dst.exists():
-        _oracle_say(f"This memory already rests in the vault. Its echo endures.", indent=True)
-        return dst
 
     uid           = hashlib.md5(path.name.encode()).hexdigest()[:12]
     summary       = _summary(text)
@@ -173,39 +485,190 @@ def route_pages(path: Path, dry_run: bool) -> Optional[Path]:
         f'filename_hint: {fname_hint_js}\n'
         f'related_entities: []\nsummary: "{summary}"\n---\n\n{text}\n'
     )
+    md = _finalize_md(md)
+
+    if dst.exists():
+        verdict, sh, dh = _classify_against_dst(md, dst)
+        if verdict == "same":
+            _oracle_say("This memory already rests in the vault. Its echo endures.", indent=True)
+            return IngestResult(action="skipped_same", dst=dst)
+        _warn_conflict(path, dst, sh, dh)
+        return IngestResult(action="conflict", dst=dst, note="pages body diverged")
+
     if not dry_run:
         out_dir.mkdir(parents=True, exist_ok=True)
         dst.write_text(md, encoding="utf-8")
-    print(f"    ✦ Inscribed to {dst.relative_to(ROOT)}")
-    return dst
+    try:
+        _disp = dst.relative_to(ROOT)
+    except ValueError:
+        _disp = dst
+    print(f"    ✦ Inscribed to {_disp}")
+    return IngestResult(action="inserted", dst=dst)
 
-def route_gemini(path: Path, dry_run: bool) -> Optional[Path]:
-    """複製 Gemini .md，補齊 frontmatter → 20_AI_Chats/Gemini/"""
+
+def route_gemini(path: Path, dry_run: bool) -> IngestResult:
+    """
+    Gemini .md → 20_AI_Chats/Gemini/
+
+    Three paths:
+      1. dst doesn't exist          → insert + record turns to ledger
+      2. dst exists, bodies match   → skipped_same
+      3. dst exists, bodies differ  → turn-aware update (Phase 1)
+         - parse spring turns, diff against ledger
+         - if 0 new turns: skipped_same (rare; usually means content
+           differs only in formatting)
+         - if >0 new turns: merge, preserve uuid, bump date_updated,
+           clear enriched_at, mark dirty for vectorize refresh
+         - if format unparseable: fall back to file-level conflict warn
+    """
     dst = AI_CHAT_DST / path.name
-    if dst.exists():
-        _oracle_say(f"This memory already rests in the vault. Its echo endures.", indent=True)
-        return dst
-
     content = path.read_text(encoding="utf-8", errors="ignore")
     if not content.strip().startswith("---"):
         content = _add_gemini_frontmatter(content, path.name)
+    content = _finalize_md(content)
 
+    if dst.exists():
+        verdict, sh, dh = _classify_against_dst(content, dst)
+        if verdict == "same":
+            _oracle_say("This memory already rests in the vault. Its echo endures.", indent=True)
+            return IngestResult(action="skipped_same", dst=dst)
+
+        # Try turn-aware update before falling back to conflict warning
+        dst_content = dst.read_text(encoding="utf-8", errors="ignore")
+        update_result = _try_turn_aware_gemini_update(content, dst, dst_content, dry_run)
+        if update_result is not None:
+            # For first-time updates we record prior turns inside the helper;
+            # also record on insert below so all paths populate the ledger.
+            return update_result
+
+        # Format unparseable / uuid missing — file-level conflict warn
+        _warn_conflict(path, dst, sh, dh)
+        return IngestResult(action="conflict", dst=dst,
+                            note="gemini body diverged but turn parsing failed")
+
+    # Fresh insert
     if not dry_run:
         AI_CHAT_DST.mkdir(parents=True, exist_ok=True)
         dst.write_text(content, encoding="utf-8")
-    print(f"    ✦ Inscribed to {dst.relative_to(ROOT)}")
-    return dst
+        # Seed the ledger with this conversation's turns so future
+        # updates can do incremental diff cleanly.
+        try:
+            from turns import GeminiParser
+            from turn_ledger import record_turns
+            parser = GeminiParser()
+            turns_list = parser.split_turns(content)
+            uuid = _extract_fm_field(content, "uuid")
+            if uuid and turns_list:
+                rel = str(dst.relative_to(BRAIN_DB))
+                record_turns([
+                    {
+                        "turn_hash":   t.hash,
+                        "memory_uuid": uuid,
+                        "memory_path": rel,
+                        "turn_index":  t.index,
+                        "source":      "gemini",
+                    }
+                    for t in turns_list
+                ])
+        except ImportError:
+            pass
+    try:
+        _disp = dst.relative_to(ROOT)
+    except ValueError:
+        _disp = dst
+    print(f"    ✦ Inscribed to {_disp}")
+    return IngestResult(action="inserted", dst=dst)
 
-def route_journal(path: Path, dry_run: bool) -> Optional[Path]:
-    """一般 .md/.txt 日記 → 30_Journal/{year}/"""
+
+def _try_turn_aware_journal_update(
+    spring_content: str,
+    dst: Path,
+    dst_content: str,
+    dry_run: bool,
+) -> IngestResult | None:
+    """
+    v0.6 Phase 2: turn-aware path for journal files that use day headings.
+    Same shape as the Gemini variant but routes through JournalAppendParser.
+    Returns None for journals without ≥2 day headings (caller falls back
+    to file-level handling).
+    """
+    try:
+        from turns import JournalAppendParser, diff_against_known
+        from turn_ledger import known_turn_hashes, record_turns
+    except ImportError:
+        return None
+
+    parser = JournalAppendParser()
+    if not parser.can_parse(spring_content):
+        return None
+    spring_turns = parser.split_turns(spring_content)
+    if not spring_turns:
+        return None
+
+    dst_uuid = _extract_fm_field(dst_content, "uuid")
+    if not dst_uuid:
+        return None
+    rel_path = str(dst.relative_to(BRAIN_DB)) if dst.is_absolute() else str(dst)
+
+    known = known_turn_hashes(memory_uuid=dst_uuid)
+    if not known:
+        prior = parser.split_turns(dst_content)
+        if prior:
+            if not dry_run:
+                record_turns([
+                    {"turn_hash": t.hash, "memory_uuid": dst_uuid,
+                     "memory_path": rel_path, "turn_index": t.index,
+                     "source": "journal_append"}
+                    for t in prior
+                ], enriched=True, embedded=True)
+            known = {t.hash for t in prior}
+
+    new_turns = diff_against_known(spring_turns, known)
+    if not new_turns:
+        return IngestResult(action="skipped_same", dst=dst,
+                            note="all days already in ledger")
+
+    from datetime import datetime as _dt
+    today = _dt.now().strftime("%Y-%m-%d")
+    merged = spring_content
+    if _extract_fm_field(spring_content, "uuid") != dst_uuid:
+        merged = re.sub(r'^uuid:.*$', f'uuid: "{dst_uuid}"', merged,
+                        count=1, flags=re.MULTILINE)
+    merged = _bump_date_updated(merged, today)
+    merged = _clear_enriched_at(merged)
+    merged = _finalize_md(merged)
+
+    if not dry_run:
+        dst.write_text(merged, encoding="utf-8")
+        record_turns([
+            {"turn_hash": t.hash, "memory_uuid": dst_uuid,
+             "memory_path": rel_path, "turn_index": t.index,
+             "source": "journal_append"}
+            for t in spring_turns
+        ])
+        _mark_dirty_for_vectorize(rel_path)
+
+    try:
+        display = dst.relative_to(ROOT)
+    except ValueError:
+        display = dst
+    print(f"    ✦ Updated {display} (+{len(new_turns)}/{len(spring_turns)} days)")
+    return IngestResult(action="updated", dst=dst,
+                        note=f"+{len(new_turns)} new days of {len(spring_turns)} total")
+
+
+def route_journal(path: Path, dry_run: bool) -> IngestResult:
+    """
+    一般 .md/.txt 日記 → 30_Journal/{year}/
+
+    v0.6 Phase 2: if the journal uses ## YYYY-MM-DD day headings, route
+    re-imports through the day-level turn-aware update path so appending
+    a new day doesn't trigger a conflict.
+    """
     date_str, year = _infer_date(path.stem)
     out_dir  = JOURNAL_DST / year
     dst_name = path.stem + ".md"
     dst      = out_dir / dst_name
-
-    if dst.exists():
-        _oracle_say(f"This memory already rests in the vault. Its echo endures.", indent=True)
-        return dst
 
     content = path.read_text(encoding="utf-8", errors="ignore")
     if not content.strip().startswith("---"):
@@ -223,26 +686,56 @@ def route_journal(path: Path, dry_run: bool) -> Optional[Path]:
             f'related_entities: []\nsummary: "{summary}"\n---\n\n'
         )
         content = front + content
+    content = _finalize_md(content)
+
+    if dst.exists():
+        verdict, sh, dh = _classify_against_dst(content, dst)
+        if verdict == "same":
+            _oracle_say("This memory already rests in the vault. Its echo endures.", indent=True)
+            return IngestResult(action="skipped_same", dst=dst)
+
+        dst_content = dst.read_text(encoding="utf-8", errors="ignore")
+        update_result = _try_turn_aware_journal_update(content, dst, dst_content, dry_run)
+        if update_result is not None:
+            return update_result
+
+        _warn_conflict(path, dst, sh, dh)
+        return IngestResult(action="conflict", dst=dst, note="journal body diverged")
 
     if not dry_run:
         out_dir.mkdir(parents=True, exist_ok=True)
         dst.write_text(content, encoding="utf-8")
-    print(f"    ✦ Inscribed to {dst.relative_to(ROOT)}")
-    return dst
+    try:
+        _disp = dst.relative_to(ROOT)
+    except ValueError:
+        _disp = dst
+    print(f"    ✦ Inscribed to {_disp}")
+    return IngestResult(action="inserted", dst=dst)
 
-def route_knowledge(path: Path, dry_run: bool) -> Optional[Path]:
+
+def route_knowledge(path: Path, dry_run: bool) -> IngestResult:
     """知識筆記 .md → 50_Knowledge/"""
     dst = KNOWLEDGE_DST / path.name
-    if dst.exists():
-        _oracle_say(f"This memory already rests in the vault. Its echo endures.", indent=True)
-        return dst
-
     content = path.read_text(encoding="utf-8", errors="ignore")
+    content = _finalize_md(content)
+
+    if dst.exists():
+        verdict, sh, dh = _classify_against_dst(content, dst)
+        if verdict == "same":
+            _oracle_say("This memory already rests in the vault. Its echo endures.", indent=True)
+            return IngestResult(action="skipped_same", dst=dst)
+        _warn_conflict(path, dst, sh, dh)
+        return IngestResult(action="conflict", dst=dst, note="knowledge body diverged")
+
     if not dry_run:
         KNOWLEDGE_DST.mkdir(parents=True, exist_ok=True)
         dst.write_text(content, encoding="utf-8")
-    print(f"    ✦ Inscribed to {dst.relative_to(ROOT)}")
-    return dst
+    try:
+        _disp = dst.relative_to(ROOT)
+    except ValueError:
+        _disp = dst
+    print(f"    ✦ Inscribed to {_disp}")
+    return IngestResult(action="inserted", dst=dst)
 
 # ─── 後處理：The Weaving + The Inscription ───────────────────
 
@@ -429,11 +922,16 @@ def main():
             print(f"     The Muses know not this form ({f.suffix}). It is returned.")
             continue
 
-        dst = router(f, dry_run=args.dry_run)
-        if dst and not args.dry_run:
-            if dst.exists():
-                new_files.append(dst)
-            archive_to_processed(f, dry_run=args.dry_run)
+        result = router(f, dry_run=args.dry_run)
+        if not args.dry_run:
+            if result.needs_followup and result.dst and result.dst.exists():
+                new_files.append(result.dst)
+            if result.should_archive:
+                archive_to_processed(f, dry_run=args.dry_run)
+            elif result.action == "conflict":
+                # Leave spring original in place so the user can decide
+                # what to do (see _warn_conflict output above).
+                pass
 
     if not new_files:
         print("\n  All fragments were already known to the vault.")
