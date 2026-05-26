@@ -30,7 +30,7 @@ CLI：
 
     python3 query_log.py --stats
     python3 query_log.py --export --since 7d > baseline.jsonl
-    python3 query_log.py --replay baseline.jsonl   # 留給 v0.5+1 實作
+    python3 query_log.py --replay baseline.jsonl --top-k 10
 """
 
 from __future__ import annotations
@@ -289,27 +289,188 @@ def stats() -> dict:
     }
 
 
-# ─── Replay (skeleton — full implementation in v0.5+1) ───────
+# ─── Replay ──────────────────────────────────────────────────
+#
+# 比對單位是 path（檔案層級），不是 chunk_id。
+# 理由：chunk_id 是內部記帳細節（v0.6 可能改命名），path 是使用者真正在意的
+# 「找到了哪份記憶」。把比對鎖在 path 層讓 replay 可以跨內部重構穩定。
 
-def replay(baseline_path: Path, top_k: int = 10) -> dict:
+def _load_baseline(baseline_path: Path) -> list[dict]:
+    """Read a previously exported baseline NDJSON. Only well-formed events kept."""
+    if not baseline_path.exists():
+        raise FileNotFoundError(f"baseline not found: {baseline_path}")
+    events: list[dict] = []
+    with baseline_path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if ev.get("schema") != SCHEMA:
+                continue
+            if not ev.get("query") or not isinstance(ev.get("retrieved_paths"), list):
+                continue
+            events.append(ev)
+    return events
+
+
+def _jaccard(a: set, b: set) -> float:
+    if not a and not b:
+        return 1.0
+    union = a | b
+    if not union:
+        return 1.0
+    return len(a & b) / len(union)
+
+
+def replay(
+    baseline_path: Path,
+    *,
+    top_k: int = 10,
+    top_n_regressions: int = 5,
+    progress: bool = False,
+) -> dict:
     """
     Re-run captured queries against current search and compute drift.
 
-    Three metrics:
-        mean_jaccard_at_k — average overlap of retrieved_paths sets
-        top1_stability    — fraction of queries whose #1 result stayed
-        latency_delta_ms  — mean (current − captured)
+    Metrics (all path-level — chunk_id schema changes do not affect these):
+        mean_jaccard_at_k  — average overlap of retrieved_paths sets, truncated to k
+        top1_stability     — fraction of queries whose #1 result path stayed identical
+        mean_latency_delta_ms — mean (current − captured), None if no captured latency
 
-    NOTE (v0.5 status): The harness imports + structure is wired here,
-    but full integration requires deciding whether to expose a clean
-    `vectorize.search()` entry point that can be called from a test
-    process with isolated artifacts. Tracked as a follow-up — call
-    raises NotImplementedError so misuse fails fast.
+    Side effects are suppressed during replay:
+        - record_access=False  → no ACT-R weight pollution
+        - MEMOSYNE_CAPTURE_QUERIES override forced off → no log feedback loop
+
+    Returns dict with summary + top-N regressions sorted by jaccard ascending.
     """
-    raise NotImplementedError(
-        "replay is wired but not yet executable; export baseline now, "
-        "implement replay in v0.5 follow-up"
+    events = _load_baseline(baseline_path)
+    if not events:
+        return {
+            "baseline_path":          str(baseline_path),
+            "n_queries":              0,
+            "mean_jaccard_at_k":      None,
+            "top1_stability":         None,
+            "mean_latency_delta_ms":  None,
+            "regressions":            [],
+            "note":                   "no replayable events in baseline",
+        }
+
+    # Lazy import to keep query_log standalone-testable when vectorize is absent
+    try:
+        from vectorize import search as _search
+    except ImportError as exc:
+        raise RuntimeError(
+            f"replay requires vectorize.search: {exc}"
+        ) from exc
+
+    # Prevent feedback loop: replay queries must not pollute the log
+    prior_override = _capture_override
+    set_capture_override(False)
+    # And cannot rely on env var being unset — temporarily clear it
+    prior_env = os.environ.pop("MEMOSYNE_CAPTURE_QUERIES", None)
+
+    rows: list[dict] = []
+    latency_deltas: list[int] = []
+
+    try:
+        for i, ev in enumerate(events):
+            query = ev["query"]
+            captured_paths = list(ev["retrieved_paths"])[:top_k]
+            t0 = datetime.now()
+            try:
+                results = _search(query, top_k=top_k, record_access=False)
+                current_paths = [r["path"] for r in results][:top_k]
+                error = None
+            except Exception as exc:  # noqa: BLE001
+                current_paths = []
+                error = f"{type(exc).__name__}: {exc}"
+            latency_ms = int((datetime.now() - t0).total_seconds() * 1000)
+
+            old_set = set(captured_paths)
+            new_set = set(current_paths)
+            jacc = _jaccard(old_set, new_set)
+            top1_same = (
+                len(captured_paths) > 0
+                and len(current_paths) > 0
+                and captured_paths[0] == current_paths[0]
+            )
+
+            captured_latency = ev.get("latency_ms")
+            if isinstance(captured_latency, (int, float)):
+                latency_deltas.append(latency_ms - int(captured_latency))
+
+            rows.append({
+                "query":            query,
+                "ts":               ev.get("ts"),
+                "captured_paths":   captured_paths,
+                "current_paths":    current_paths,
+                "jaccard":          round(jacc, 4),
+                "top1_same":        bool(top1_same),
+                "current_latency_ms": latency_ms,
+                "captured_latency_ms": captured_latency,
+                "error":            error,
+            })
+
+            if progress and (i + 1) % 10 == 0:
+                print(f"  [replay] {i + 1}/{len(events)}", file=sys.stderr)
+    finally:
+        # Restore prior capture state
+        set_capture_override(prior_override)
+        if prior_env is not None:
+            os.environ["MEMOSYNE_CAPTURE_QUERIES"] = prior_env
+
+    valid = [r for r in rows if r["error"] is None]
+    mean_jacc = sum(r["jaccard"] for r in valid) / len(valid) if valid else None
+    top1_pct = (
+        sum(1 for r in valid if r["top1_same"]) / len(valid) if valid else None
     )
+    mean_latency_delta = (
+        sum(latency_deltas) / len(latency_deltas) if latency_deltas else None
+    )
+
+    regressions = sorted(
+        [r for r in valid if r["jaccard"] < 1.0],
+        key=lambda r: (r["jaccard"], r["ts"] or ""),
+    )[:top_n_regressions]
+
+    return {
+        "baseline_path":          str(baseline_path),
+        "top_k":                  top_k,
+        "n_queries":              len(rows),
+        "n_errors":               len(rows) - len(valid),
+        "mean_jaccard_at_k":      round(mean_jacc, 4) if mean_jacc is not None else None,
+        "top1_stability":         round(top1_pct, 4) if top1_pct is not None else None,
+        "mean_latency_delta_ms":  int(mean_latency_delta) if mean_latency_delta is not None else None,
+        "regressions":            regressions,
+    }
+
+
+def _print_replay_summary(report: dict) -> None:
+    print("🜍 The Augury Replay — drift report")
+    print(f"   baseline:               {report['baseline_path']}")
+    print(f"   n_queries:              {report['n_queries']}  (errors: {report.get('n_errors', 0)})")
+    print(f"   top_k:                  {report.get('top_k')}")
+    print(f"   mean_jaccard@k:         {report['mean_jaccard_at_k']}")
+    print(f"   top1_stability:         {report['top1_stability']}")
+    print(f"   mean_latency_delta_ms:  {report['mean_latency_delta_ms']}")
+    regs = report.get("regressions") or []
+    if regs:
+        print(f"\n   Top {len(regs)} regressions (lowest Jaccard first):")
+        for r in regs:
+            q = r["query"]
+            q_short = (q[:60] + "…") if len(q) > 60 else q
+            print(f"     · jaccard={r['jaccard']:.2f}  top1_same={r['top1_same']}  "
+                  f"q={q_short!r}")
+    else:
+        note = report.get("note")
+        if note:
+            print(f"   note: {note}")
+        else:
+            print("\n   No regressions — all replayed queries match baseline exactly.")
 
 
 # ─── CLI ─────────────────────────────────────────────────────
@@ -324,7 +485,14 @@ def _main() -> int:
     ap.add_argument("--source", default="",
                     help="filter: comma-separated source labels (search,mcp,...)")
     ap.add_argument("--replay", default="",
-                    help="(stub) replay a previously exported baseline")
+                    help="replay a previously exported baseline NDJSON; "
+                         "compares retrieved paths against current search")
+    ap.add_argument("--top-k", type=int, default=10,
+                    help="top-k for replay (default 10)")
+    ap.add_argument("--top-n-regressions", type=int, default=5,
+                    help="how many worst-jaccard queries to print (default 5)")
+    ap.add_argument("--json", action="store_true",
+                    help="emit replay report as JSON instead of human summary")
     args = ap.parse_args()
 
     if args.stats:
@@ -348,10 +516,20 @@ def _main() -> int:
 
     if args.replay:
         try:
-            replay(Path(args.replay))
-        except NotImplementedError as e:
+            report = replay(
+                Path(args.replay),
+                top_k=args.top_k,
+                top_n_regressions=args.top_n_regressions,
+                progress=True,
+            )
+        except (FileNotFoundError, RuntimeError) as e:
             print(f"[replay] {e}", file=sys.stderr)
             return 2
+        if args.json:
+            print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+        else:
+            _print_replay_summary(report)
+        return 0
 
     ap.print_help()
     return 0
