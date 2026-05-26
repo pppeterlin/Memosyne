@@ -252,6 +252,8 @@ def cmd_search(ns: argparse.Namespace) -> int:
         args.extend(["--type", ns.type])
     if ns.no_record_access:
         args.append("--no-record-access")
+    if ns.walk and ns.walk != "deep":
+        args.extend(["--walk", ns.walk])
     return _run_script("vectorize.py", args)
 
 
@@ -345,6 +347,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-record-access",
         action="store_true",
         help="do not write this search to the Chronicle access log",
+    )
+    search.add_argument(
+        "--walk",
+        choices=["deep", "fast", "off"],
+        default="deep",
+        help="graph walk strategy: deep=PPR spreading (default), "
+             "fast=two-pass walk, off=skip graph contribution",
     )
     search.set_defaults(func=cmd_search)
 

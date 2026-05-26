@@ -951,6 +951,91 @@ def get_memory_edge_counts(
     return counts
 
 
+def two_pass_walk(
+    seed_paths_with_scores: list[tuple[str, float]],
+    *,
+    max_neighbors_per_entity: int = 50,
+    conn: kuzu.Connection | None = None,
+) -> dict[str, float]:
+    """
+    Cheap structural walk: anchor memory → shared entity → other memory.
+
+    Designed as a fast complement to spreading_activation (PPR):
+
+    - PPR diffuses scores across the whole graph with random restarts;
+      gives the deepest signal but is the slowest path in search.
+    - two_pass_walk follows exactly two graph hops with a per-entity
+      fan-out cap; gives a "what else mentions the same things" signal
+      in O(seeds × entities × cap) time without any matrix algebra.
+
+    Score model: neighbor_score = anchor_score / (1 + hop) with hop=2,
+    so each surfaced memory gets at most anchor / 3 added to its score
+    via subsequent boost in search(). Multiple seeds reaching the same
+    neighbor accumulate (we take max, not sum, to avoid runaway).
+
+    Args:
+        seed_paths_with_scores: [(path, score), ...] — anchor results from
+            the dense / BM25 / graph RRF merge. score is the post-RRF score.
+        max_neighbors_per_entity: cap on fan-out to keep walks bounded
+            even when a popular entity (e.g. a frequent person) is hit.
+
+    Returns:
+        {neighbor_path: contribution_score}. Seed paths are excluded
+        (caller already has them). Empty dict if the Tapestry is empty.
+    """
+    if not seed_paths_with_scores:
+        return {}
+
+    _own = conn is None
+    if _own:
+        if not TAPESTRY_DB.exists():
+            return {}
+        conn = get_conn()
+
+    rels = ["mem_person", "mem_location", "mem_event", "mem_period"]
+    seed_set = {p for p, _ in seed_paths_with_scores}
+    contributions: dict[str, float] = {}
+
+    try:
+        for seed_path, anchor_score in seed_paths_with_scores:
+            if anchor_score <= 0:
+                continue
+            walk_bonus = anchor_score / 3.0  # 1 / (1 + hop) with hop=2
+
+            for rel in rels:
+                try:
+                    # mem→entity→mem in one Cypher hop pair.
+                    # LIMIT caps fan-out per (seed, rel) pair.
+                    r = conn.execute(
+                        f"MATCH (m:Memory {{path: $p}})-[:{rel}]->(e)"
+                        f"<-[:{rel}]-(other:Memory) "
+                        f"WHERE other.path <> $p "
+                        f"RETURN DISTINCT other.path AS path "
+                        f"LIMIT $lim",
+                        {"p": seed_path, "lim": max_neighbors_per_entity},
+                    )
+                    df = r.get_as_df()
+                    for _, row in df.iterrows():
+                        np_ = row["path"]
+                        if np_ in seed_set:
+                            continue
+                        prev = contributions.get(np_, 0.0)
+                        # max-aggregation: prevent one heavily-anchored
+                        # neighbor from dominating via many seeds.
+                        if walk_bonus > prev:
+                            contributions[np_] = walk_bonus
+                except Exception:
+                    continue
+    finally:
+        if _own:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    return contributions
+
+
 def _rel_endpoints(rel: str) -> tuple[str, str]:
     """回傳 (from_label, to_label)。"""
     mapping = {
