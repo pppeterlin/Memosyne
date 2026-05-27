@@ -48,6 +48,10 @@ class Artifact:
     privacy: str
     description: str
     legacy_shim: bool = True
+    # v0.7 — when True, the artifact is allowed to not exist without
+    # health complaining. Use for ephemeral markers (consumed by the next
+    # run) and opt-in logs (only present when the feature is enabled).
+    ephemeral: bool = False
 
 
 ARTIFACTS: dict[str, Artifact] = {
@@ -116,6 +120,7 @@ ARTIFACTS: dict[str, Artifact] = {
         description="The Augury Replay capture log; opt-in via "
                     "MEMOSYNE_CAPTURE_QUERIES=1 (default off).",
         legacy_shim=False,
+        ephemeral=True,
     ),
     "dirty_paths": Artifact(
         key="dirty_paths",
@@ -126,6 +131,7 @@ ARTIFACTS: dict[str, Artifact] = {
                     "file changed and whose vector chunks need refresh. "
                     "Consumed and cleared by vectorize.build_index().",
         legacy_shim=False,
+        ephemeral=True,
     ),
 }
 
@@ -172,5 +178,6 @@ def artifact_manifest() -> list[dict]:
             "kind": artifact.kind,
             "privacy": artifact.privacy,
             "description": artifact.description,
+            "ephemeral": artifact.ephemeral,
         })
     return rows

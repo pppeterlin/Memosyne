@@ -167,22 +167,37 @@ def _collect_health_checks() -> list[HealthCheck]:
             "Install runtime deps: pip install -r Personal_Brain_DB/00_System/requirements.txt",
         ))
 
+    expected_keys = {
+        "chronicle_jsonl",
+        "chronicle_db",
+        "bm25_index",
+        "contextual_cache",
+        "hyqe_cache",
+        "tapestry_db",
+        "muse_centroids",
+        "chroma_db",
+    }
     for artifact in artifact_manifest():
-        expected = artifact["key"] in {
-            "chronicle_jsonl",
-            "chronicle_db",
-            "bm25_index",
-            "contextual_cache",
-            "hyqe_cache",
-            "tapestry_db",
-            "muse_centroids",
-            "chroma_db",
-        }
         exists = bool(artifact["exists"])
+        is_expected = artifact["key"] in expected_keys
+        is_ephemeral = bool(artifact.get("ephemeral"))
+
+        if is_expected:
+            # Must exist; absent → fail (red)
+            status: bool | None = exists
+        elif is_ephemeral:
+            # Ephemeral marker / opt-in log: absent IS the normal state.
+            # Only flag as info-ok regardless of existence; never warn.
+            status = True
+        else:
+            # Unknown artifact: best-effort warn if absent (catches regressions)
+            status = exists if exists else None
+
         checks.append(_check(
-            exists if expected else None,
+            status,
             artifact["key"],
             artifact["path"],
+            "" if is_ephemeral else
             "Run the related rebuild command or restore the private artifact from backup.",
         ))
 
@@ -199,7 +214,8 @@ def _collect_health_checks() -> list[HealthCheck]:
         ollama_ok,
         "Ollama API",
         ollama_detail,
-        "Start Ollama before enrichment, contextualization, HyQE, or local chat.",
+        "Start Ollama with `ollama serve &` then `ollama pull <model>`,\n"
+        "       OR pick a cloud backend instead: `memosyne providers list`.",
     ))
 
     secret_ok, secret_detail = _check_secret_files()
@@ -460,6 +476,12 @@ def build_parser() -> argparse.ArgumentParser:
         subparsers, "auth",
         "manage HTTP bearer tokens (create / list / revoke)",
         "auth.py",
+    )
+
+    _add_passthrough(
+        subparsers, "providers",
+        "inspect LLM provider status and test connectivity (list / test)",
+        "providers.py",
     )
 
     return parser
