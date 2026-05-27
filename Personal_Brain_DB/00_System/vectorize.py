@@ -1520,6 +1520,10 @@ def main():
     parser.add_argument("--walk", choices=["deep", "fast", "off"], default="deep",
                         help="graph walk strategy: deep=PPR spreading (default), "
                              "fast=two-pass walk, off=skip graph contribution")
+    parser.add_argument("--return-parent", action="store_true",
+                        help="replace each result's snippet with its full parent "
+                             "H2 section (small-to-big retrieval; helpful when "
+                             "default snippets are too thin to read)")
     parser.add_argument("--contextualize", action="store_true",
                         help="The Illumination — 生成語境化段落摘要（Contextual Retrieval）")
     parser.add_argument("--hyqe",          action="store_true",
@@ -1531,6 +1535,7 @@ def main():
     if args.query:
         results = search(args.query, args.top, args.type,
                          record_access=not args.no_record_access,
+                         return_parent=args.return_parent,
                          walk=args.walk)
         if not results:
             print("The waters are still. No echoes found.")

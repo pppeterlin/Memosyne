@@ -246,6 +246,25 @@ def cmd_init(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_rebuild(ns: argparse.Namespace) -> int:
+    """
+    v0.7: rebuild defaults to incremental. Pass --full to wipe everything.
+
+    Incremental path:
+      - vectorize.py with no flags
+      - picks up new chunks (id-not-in-existing filter)
+      - consumes dirty_paths.txt (v0.6 turn-aware update marker)
+      - rebuilds BM25 from current chunks
+
+    Full path (--full):
+      - vectorize.py --rebuild
+      - drops the Chroma collection and re-embeds every chunk
+      - slow; use only when schema changed or index is corrupt
+    """
+    args = ["--rebuild"] if ns.full else []
+    return _run_script("vectorize.py", args)
+
+
 def cmd_search(ns: argparse.Namespace) -> int:
     args = ["--query", ns.query, "--top", str(ns.top)]
     if ns.type:
@@ -254,6 +273,8 @@ def cmd_search(ns: argparse.Namespace) -> int:
         args.append("--no-record-access")
     if ns.walk and ns.walk != "deep":
         args.extend(["--walk", ns.walk])
+    if ns.return_parent:
+        args.append("--return-parent")
     return _run_script("vectorize.py", args)
 
 
@@ -360,10 +381,41 @@ def build_parser() -> argparse.ArgumentParser:
         help="graph walk strategy: deep=PPR spreading (default), "
              "fast=two-pass walk, off=skip graph contribution",
     )
+    search.add_argument(
+        "--return-parent",
+        action="store_true",
+        help="replace snippet with the full parent H2 section "
+             "(small-to-big retrieval)",
+    )
     search.set_defaults(func=cmd_search)
 
     _add_passthrough(subparsers, "ingest", "run The Spring Ritual", "ingest.py")
-    _add_passthrough(subparsers, "rebuild", "rebuild retrieval indexes", "vectorize.py", ["--rebuild"])
+
+    # `rebuild` used to always pass --rebuild (full wipe-and-rebuild). v0.7
+    # changes the default to incremental — for daily ingest workflow that
+    # only needs to embed a few new chunks, full rebuild is grossly wasteful
+    # (21K chunks re-embedded for ~30 new ones). Pass --full to force.
+    rebuild = subparsers.add_parser(
+        "rebuild",
+        help="rebuild retrieval indexes (default: incremental; use --full to wipe and rebuild)",
+    )
+    rebuild.add_argument(
+        "--full",
+        action="store_true",
+        help="wipe Chroma + BM25 and rebuild from scratch (slow; only when schema "
+             "changed or index is suspected corrupt)",
+    )
+    rebuild.set_defaults(func=cmd_rebuild)
+
+    _add_passthrough(subparsers, "enrich",
+                     "run The Weaving (LLM entity + theme enrichment)",
+                     "enrich.py")
+    _add_passthrough(subparsers, "contextualize",
+                     "The Illumination — generate contextual paragraph summaries",
+                     "vectorize.py", ["--contextualize"])
+    _add_passthrough(subparsers, "hyqe",
+                     "The Triple Echo — generate hypothetical questions per chunk",
+                     "vectorize.py", ["--hyqe"])
     _add_passthrough(subparsers, "slumber", "run The Rite of Slumber", "slumber.py")
     _add_passthrough(subparsers, "chronicle", "inspect The Chronicle of Mneme", "mneme_weight.py")
     _add_passthrough(subparsers, "tapestry", "inspect or rebuild The Tapestry", "tapestry.py")
