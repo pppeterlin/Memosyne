@@ -522,6 +522,18 @@ def route_gemini(path: Path, dry_run: bool) -> IngestResult:
          - if format unparseable: fall back to file-level conflict warn
     """
     dst = AI_CHAT_DST / path.name
+    # Hint when the filename looks like a Gemini export but lacks the
+    # conversation-hash suffix the official export uses. Without the hash,
+    # the same thread re-exported can't be dedup'd by filename (the v0.6
+    # turn-aware update path falls back to content_hash, but only after a
+    # full re-parse). Tell the user how to fix it cleanly.
+    if not re.search(r'_[0-9a-f]{8,16}\.md$', path.name):
+        print(f"    ⚠  '{path.name}' lacks the _<convhash> filename suffix.")
+        print(f"       Gemini exports usually have it. Without it, this thread")
+        print(f"       can't be matched to its existing vault copy on next import.")
+        print(f"       Fix: rename to '<original>_<dirhash>.md' before ingest")
+        print(f"            (the dirhash is the suffix on the export folder name).")
+
     content = path.read_text(encoding="utf-8", errors="ignore")
     if not content.strip().startswith("---"):
         content = _add_gemini_frontmatter(content, path.name)
