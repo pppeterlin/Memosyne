@@ -262,6 +262,102 @@ def cmd_init(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_quickstart(_: argparse.Namespace) -> int:
+    """
+    v0.7 — The Threshold Ritual
+
+    First-run experience: prove the whole pipeline works against the
+    public sample vault, in under 5 minutes, without the user needing
+    to read any docs first.
+
+    Flow:
+      1. Confirm a usable LLM provider exists (offer choices if not)
+      2. Run eval --sample (rebuilds sample indexes + runs golden eval)
+      3. Run two example searches and pretty-print the top results
+      4. Print 'next steps' that point at the real-vault workflow
+    """
+    print("🜍 Memosyne — The Threshold Ritual")
+    print()
+
+    # Step 1: provider check
+    sys.path.insert(0, str(SYSTEM_DIR))
+    try:
+        import providers as _providers
+    except ImportError as e:
+        print(f"[fail] providers module unavailable: {e}")
+        print("       Run `pip install -e .` from the repo root and retry.")
+        return 1
+
+    print("Step 1 / 4 — Detect LLM provider")
+    ready = []
+    for p in _providers.PROVIDERS:
+        status, detail = _providers._STATUS_FN[p.name]()
+        marker = "✓" if status == "ok" else "—" if status == "no-key" else "✗"
+        print(f"   {marker} {p.name:12} {status:12} {detail[:60]}")
+        if status == "ok":
+            ready.append(p.name)
+
+    if not ready:
+        print()
+        print("No LLM provider is ready. Pick one and configure it:")
+        print()
+        print("   A. Local (private, free): brew install ollama && ollama pull gemma3:4b")
+        print("   B. DeepSeek (cheap cloud): export DEEPSEEK_API_KEY=sk-... in .env")
+        print("   C. OpenRouter (multi):    drop key into ./openrouter-key")
+        print()
+        print("Then rerun: memosyne quickstart")
+        return 1
+
+    print(f"   → {ready[0]} is ready; quickstart will use it.")
+    print()
+
+    # Step 2: sample eval (proves indexing + retrieval round-trip)
+    print("Step 2 / 4 — Build sample-vault indexes and evaluate")
+    print("   (this rebuilds Chroma + BM25 + Tapestry against sample_vault/_eval/golden.yaml)")
+    ns = argparse.Namespace(
+        sample=True, golden="", top_k=10, config="quickstart",
+    )
+    rc = cmd_eval(ns)
+    if rc != 0:
+        print()
+        print("   eval failed; see output above. quickstart aborting.")
+        return rc
+    print()
+
+    # Step 3: example searches
+    print("Step 3 / 4 — Two example searches against sample_vault")
+    sample_vault_dir = ROOT / "sample_vault"
+    env_overrides = {
+        "MEMOSYNE_VAULT_DIR":    str(sample_vault_dir),
+        "MEMOSYNE_ARTIFACT_DIR": str(sample_vault_dir / "_artifacts"),
+    }
+    for q in ["watercolor", "Tokyo trip"]:
+        print(f"\n   $ memosyne search {q!r} --top 3 --no-record-access")
+        _run_script(
+            "vectorize.py",
+            ["--query", q, "--top", "3", "--no-record-access"],
+            env_overrides=env_overrides,
+        )
+
+    # Step 4: next steps
+    print()
+    print("Step 4 / 4 — Next")
+    print("   Add your own memory:")
+    print("     cp your_journal.md spring/")
+    print("     memosyne ingest")
+    print()
+    print("   Search your real vault (after first ingest):")
+    print("     memosyne search '<question>' --walk deep")
+    print()
+    print("   Periodic maintenance:")
+    print("     memosyne slumber --reflect --days 14")
+    print()
+    print("   See `memosyne --help` for the full command surface.")
+    print()
+    print("🌊 The Spring of Memosyne is open. Begin the offering.")
+    return 0
+
+
 def cmd_rebuild(ns: argparse.Namespace) -> int:
     """
     v0.7: rebuild defaults to incremental. Pass --full to wipe everything.
@@ -376,6 +472,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     init = subparsers.add_parser("init", help="ensure core directories exist")
     init.set_defaults(func=cmd_init)
+
+    quickstart = subparsers.add_parser(
+        "quickstart",
+        help="first-run experience: detect provider, build sample indexes, run two searches",
+    )
+    quickstart.set_defaults(func=cmd_quickstart)
 
     health = subparsers.add_parser("health", help="check runtime and artifact health")
     health.add_argument("--json", action="store_true", help="emit machine-readable health results")
