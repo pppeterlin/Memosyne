@@ -126,7 +126,23 @@ Before tagging a public release (or before publishing a v0.x branch upstream):
    ```
    Any history finding outside of intentional sample fixtures must be triaged before release: rotate the credential, scrub history if necessary, and refresh the release branch.
 4. **Update `docs/v0.X_*.md`** if the release scope changed since the planning doc was written.
-5. **Tag and publish** via `gh release create vX.Y.Z`. Match the title and body style of prior releases.
+5. **Tag and publish.** Prefer the scripted path so we never skip a version again:
+   ```bash
+   make release VERSION=0.X.Y           # preflight + verify + bump + tag
+   # then follow the printed next-step commands to push + gh release create
+   ```
+   The script enforces: must be on master, clean working tree, in sync with
+   origin, `make verify` green, tag does not already exist. If any check
+   fails it refuses to write.
+
+   For the rare case where you need the legacy manual flow, the underlying
+   commands are equivalent to:
+   ```bash
+   sed -i '' 's/^version = .*/version = "0.X.Y"/' pyproject.toml
+   git commit -am "Bump version to 0.X.Y" && git push
+   git tag -a v0.X.Y -m "Memosyne v0.X.Y" && git push origin v0.X.Y
+   gh release create v0.X.Y --title "..." --notes-file ...
+   ```
 
 ---
 
