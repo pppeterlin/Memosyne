@@ -29,7 +29,8 @@ Memosyne 是一個本地優先的個人記憶基礎設施層，供 AI Agent 透�
 | v0.4 | 開源發布 | 準備乾淨、可安裝、隱私安全的公開版本 | 公開 |
 | v0.5 | 規模化與自我評估 | deterministic 抽取、Augury Replay、graph walk 多策略、MCP HTTP、skills、CI invariants | 公開 |
 | v0.6 | 累積型來源 | turn-level 去重，正確處理 Gemini 續寫等增量匯入 | 公開 |
-| v0.7 | 易用性與開源體驗 | quickstart、CLI 一致性、錯誤訊息升級、文檔重組、多 provider 一鍵切換、release 工具 | 開發中 |
+| v0.7 | 易用性與開源體驗 | quickstart、CLI 一致性、錯誤訊息升級、文檔重組、多 provider 一鍵切換、release 工具 | 公開 |
+| v0.8 | 分散式運算（Distant Forge）| LLM 全雲端、embedding 走遠端 GPU；providers/health 涵蓋 remote endpoint；v0.6 partial enrichment 收尾 | 開發中 |
 
 ## v0.2：檢索凍結
 
@@ -119,15 +120,15 @@ python Personal_Brain_DB/00_System/slumber.py --stats
 
 ## 目前建議優先順序
 
-v0.7 收口中（PR #13），主題 The Open Threshold — 降低使用門檻。完成標準與細節見
-[docs/v0.7_open_threshold.md](docs/v0.7_open_threshold.md)。
+v0.8 開發中（The Distant Forge）— LLM 全雲端 + embedding 走遠端 GPU。
+完整計畫見 [docs/v0.8_distant_forge.md](docs/v0.8_distant_forge.md)。
+順便收 v0.6 留下的 Phase 3 partial enrichment。
 
-v0.7 merge 之後的候選方向：
+v0.8 完成之後的候選方向：
 
-1. **v0.8 — partial enrichment**：只 enrich 新 turns、merge 進現有 YAML
-   （v0.6 deferred 項，對大對話續寫的成本影響大）。
-2. **Aletheia turn-level correction**：v0.6 後記憶身分到 turn 層，correction 也該下沉。
-3. **OAuth 2.1 for MCP HTTP**：等真實有人從外部連 HTTP 後再做。
-4. **PyPI 套件化**：`pip install memosyne` 而不是 `pip install -e .`。
+1. **Aletheia turn-level correction**：v0.6 後記憶身分到 turn 層，correction 也該下沉。
+2. **OAuth 2.1 for MCP HTTP**：等真實有人從外部連 HTTP 後再做。
+3. **PyPI 套件化**：`pip install memosyne` 而不是 `pip install -e .`。
+4. **更多累積型 source parser**（Slack / Discord / WhatsApp）：架構已支援，等真實 fixture。
 
 每個方向值得獨立 planning doc 再開分支；不要在 master 直接動手。
