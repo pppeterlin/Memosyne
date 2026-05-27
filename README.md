@@ -448,7 +448,7 @@ The mythology is a memory aid, not a barrier. Every command in the CLI uses the 
 
 ## Acknowledgements & References
 
-Memosyne stands on the shoulders of excellent research and open-source work. The techniques below are cited in the architecture and per-release planning docs under [docs/](docs/) (and earlier design memos archived in [_archive/](_archive/)). Respect where it's due.
+Memosyne stands on the shoulders of excellent research and open-source work. The techniques below are cited in the architecture and per-release planning docs under [docs/](docs/) (earlier design memos kept in [docs/archive/](docs/archive/)). Respect where it's due.
 
 ### Foundational techniques already implemented
 

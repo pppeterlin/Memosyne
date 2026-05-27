@@ -371,7 +371,7 @@ Codebase 用希臘神話命名讓每個子系統有人性的聲音。讀原始�
 
 ## 致謝與參考文獻（Acknowledgements & References）
 
-Memosyne 站在許多優秀研究與開源專案的肩膀上。以下列出架構採用的技術；對應的 release 計畫見 [docs/](docs/)，早期設計備忘錄歸檔在 [_archive/](_archive/)。該有的致敬不能少。
+Memosyne 站在許多優秀研究與開源專案的肩膀上。以下列出架構採用的技術；對應的 release 計畫見 [docs/](docs/)，早期設計備忘錄歸檔在 [docs/archive/](docs/archive/)。該有的致敬不能少。
 
 ### 已實作技術的基礎文獻
 
