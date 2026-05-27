@@ -7,6 +7,30 @@
 
 Memosyne 是一個本地優先的個人記憶基礎設施，透過 MCP 協議讓 AI Agent（Claude、Cursor 等）能夠存取你的個人脈絡——日記、對話紀錄、Profile 等——並以認知科學的方式組織和檢索。
 
+---
+
+## 30 秒上手
+
+```bash
+git clone https://github.com/pppeterlin/Memosyne && cd Memosyne
+pip install -e .
+memosyne quickstart           # 偵測 LLM provider，跑完整端到端 demo
+```
+
+`quickstart` 會建好 sample vault 索引、跑 golden eval、展示兩個搜尋範例——**完全離線、不碰任何私人資料**。任何一個 LLM backend 都能用（本地 Ollama、DeepSeek API、OpenRouter…），`memosyne providers list` 看哪個就緒。
+
+接著把自己的人生餵進來：
+
+```bash
+cp my_journal.md spring/
+memosyne ingest               # 自動路由、增強、索引
+memosyne search "去年三月我在想什麼？" --walk deep
+```
+
+Claude Desktop / Cursor 的 MCP 整合請看 [MCP 設定](#mcp-設定claude-desktop--cursor) 段。
+
+---
+
 ## 核心精神
 
 AI 能力每季都在跳躍，但再強的模型也無法在冷啟動狀態下認識「你」——你和誰共度時光、做過哪些決定、如何一路改變——這些只散落在日記、對話與筆記裡。
@@ -17,22 +41,42 @@ AI 能力每季都在跳躍，但再強的模型也無法在冷啟動狀態下�
 
 ## 架構總覽
 
+```mermaid
+%%{init: {'theme':'base', 'themeVariables': {'background':'#f5f5f5', 'primaryColor':'#f5f5f5', 'lineColor':'#666', 'primaryBorderColor':'#888'}}}%%
+flowchart TB
+    classDef stage fill:#e8f4f8,stroke:#5a8aa6,color:#222
+    classDef vault fill:#f8f0e0,stroke:#a68a5a,color:#222
+    classDef external fill:#eee,stroke:#888,color:#444
+
+    SRC[".md / .pages / Gemini 匯出 / 任意文字"]:::external
+    SPRING["spring/<br/><i>記憶之泉</i><br/>投放區"]:::external
+
+    SRC --> SPRING
+
+    subgraph PIPE["ingest pipeline"]
+        DISC["Discernment<br/>格式辨識 → 繆思路由"]:::stage
+        WEAVE["Weaving<br/>LLM 實體與主題抽取"]:::stage
+        INSCRIBE["Inscription<br/>切片 + 向量 + 索引"]:::stage
+        DISC --> WEAVE --> INSCRIBE
+    end
+
+    SPRING --> PIPE
+
+    subgraph VAULT["Personal_Brain_DB/（The Vault）"]
+        P10["10_Profile/<br/>語意記憶 — 你是誰"]:::vault
+        P20["20_AI_Chats/<br/>工作記憶 — 近期 AI 對話"]:::vault
+        P30["30_Journal/<br/>情節記憶 — 生活事件"]:::vault
+        P40["40_Projects/<br/>程序記憶 — 專案筆記"]:::vault
+        P50["50_Knowledge/<br/>語意記憶 — 知識累積"]:::vault
+    end
+
+    INSCRIBE --> VAULT
+
+    AGENT["Agent（Claude / Cursor / …）<br/>透過 memosyne search · MCP"]:::external
+    VAULT --> AGENT
 ```
-原始資料（.pages / .md / Gemini 導出）
-    ↓ spring/（記憶之泉）
-ingest.py — The Spring Ritual
-    ↓
-enrich.py — The Weaving（Oracle of Mneme，使用使用者自選的 LLM 後端）
-    ↓
-vectorize.py — The Inscription（向量化 + 索引）
-    ↓
-Personal_Brain_DB/（The Vault）
-    ├── 10_Profile/   — Semantic Memory（語意記憶）
-    ├── 20_AI_Chats/  — Working Memory（工作記憶）
-    ├── 30_Journal/   — Episodic Memory（情節記憶）
-    ├── 40_Projects/  — Procedural Memory（程序記憶）
-    └── 50_Knowledge/ — Semantic Memory（知識積累）
-```
+
+整個 pipeline 每個階段都保留人類可讀的 Markdown——`Personal_Brain_DB/` 裡任何檔案都能 `cat` 讀。向量索引、BM25、Tapestry 圖譜都是衍生物；**唯一的真相是 `.md` 本身**。
 
 ---
 
@@ -58,44 +102,47 @@ Personal_Brain_DB/（The Vault）
 
 ## 快速開始
 
-### 環境設定
+### 環境需求
+
+- Python 3.10+
+- 任一個 LLM backend（`memosyne providers list` 看狀態）：
+  - **本地 Ollama**（私密、免費）：`brew install ollama && ollama pull gemma3:4b`
+  - **DeepSeek API**（便宜的 frontier 推理）：在 `.env` 設 `DEEPSEEK_API_KEY`
+  - **OpenRouter**（多 provider 路由）：把 key 寫進 `./openrouter-key`
+  - **OpenAI 相容 proxy**（LiteLLM / aiclient-2-api）：設 `PROXY_BASE_URL` + `PROXY_API_KEY`
+
+雲端 LLM 是 opt-in；完整隱私模型見 [docs/privacy.md](docs/privacy.md)。
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r Personal_Brain_DB/00_System/requirements.txt
+git clone https://github.com/pppeterlin/Memosyne && cd Memosyne
+python -m venv .venv && source .venv/bin/activate
+pip install -e .
+memosyne health         # 確認所有 artifact 與 backend 都可達
+memosyne quickstart     # 對 sample vault 跑端到端 demo
 ```
 
 ### 入庫新記憶
 
 ```bash
-# 把任何格式丟進 spring/
-cp 我的日記.pages spring/
+cp 我的日記.md spring/                # 投放到記憶之泉
+memosyne ingest                       # 自動路由、增強、索引
 
-# 執行 The Spring Ritual
-python3 Personal_Brain_DB/00_System/ingest.py
-
-# 其他選項
-python3 Personal_Brain_DB/00_System/ingest.py --dry-run      # 預覽
-python3 Personal_Brain_DB/00_System/ingest.py --no-enrich    # 跳過 LLM 增強
-python3 Personal_Brain_DB/00_System/ingest.py --rebuild      # 完整重建索引
+# 選項
+memosyne ingest --dry-run             # 預覽
+memosyne ingest --no-enrich           # 跳過 LLM 增強（更快）
+memosyne rebuild --full               # 完整重建索引（只在 schema 變動時用）
 ```
 
 ### 搜尋記憶
 
 ```bash
-# v0.3 command surface
-python3 memosyne.py health
-python3 memosyne.py search "測試查詢" --top 5
+memosyne search "我去年三月在想什麼？" --top 5 --walk deep
+memosyne search "Tokyo trip" --return-parent     # 展開完整段落
+memosyne search "AI 創業" --walk fast            # 用快版 graph walk
 
-# 互動式搜尋 REPL
-python3 Personal_Brain_DB/00_System/search.py
-
-# 單次搜尋
-python3 Personal_Brain_DB/00_System/vectorize.py --query "深圳工作" --top 5
-
-# RAG 對話（使用你設定的 LLM 後端）
-python3 Personal_Brain_DB/00_System/chat.py
+# 互動 / 進階
+python3 Personal_Brain_DB/00_System/search.py     # 互動式 REPL
+python3 Personal_Brain_DB/00_System/chat.py       # RAG 對話
 ```
 
 ---
@@ -256,6 +303,33 @@ memosyne/
 ```
 
 *所有個人記憶內容（10~50 資料夾）均在 `.gitignore` 中排除。*
+
+---
+
+## 詞彙對照 — 神話 ↔ 工程
+
+Codebase 用希臘神話命名讓每個子系統有人性的聲音。讀原始碼想看工程意義時：
+
+| 神話名稱 | 工程意義 |
+|---|---|
+| **Mnemosyne** | 記憶女神泰坦；專案名稱由來 |
+| **The Spring**（`spring/`）| 投放區，新檔案進入 ingest 前的入口 |
+| **The Vault**（`Personal_Brain_DB/`）| 規範性 Markdown 儲存；唯一真相 |
+| **The Nine Muses** | 檔案類型路由器（Clio=日記、Calliope=AI 對話…）|
+| **Oracle of Mneme**（`enrich.py`）| LLM-based 實體與主題抽取器 |
+| **The Tapestry**（`tapestry.py`）| 知識圖譜：記憶 ↔ 人/地/事件 |
+| **The Chronicle of Mneme**（`mneme_weight.py`）| 存取日誌 + ACT-R 認知衰減重排 |
+| **The Illumination** | Contextual Retrieval — 段落摘要注入後再 embedding |
+| **The Triple Echo** | HyQE — 每 chunk 生成假設問題做多 view 檢索 |
+| **The Augury / Augury Replay** | 檢索評估（golden eval + 真實 query replay）|
+| **Aletheia** | 修正層：編輯/失效/還原事實，完整 audit |
+| **The Rite of Slumber** | 記憶鞏固：反思 + Hebbian + Lethe + Naming + Ordeal + Aggregation |
+| **The Lethe Protocol** | 策略性遺忘 — 標記沉睡記憶但不刪除 |
+| **The Open Threshold** | MCP HTTP 傳輸 + bearer token 認證 |
+| **The Self-Weaving Tapestry** | v0.5 deterministic link 抽取（frontmatter + body → 圖譜邊）|
+| **The Codex of Skills** | `00_System/skills/` — 給 MCP-aware agent 的 fat skill 文件 |
+
+神話只是記憶輔助，不是門檻。所有 CLI 指令都用平實工程動詞（`ingest`、`search`、`rebuild`…）；詩意保留在輸出訊息與 docstring。
 
 ---
 
