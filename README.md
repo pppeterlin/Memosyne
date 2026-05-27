@@ -9,6 +9,30 @@ Memosyne is a **local-first personal memory infrastructure** that gives AI agent
 
 Built for the AI agent era: your memories become a queryable skill via MCP.
 
+---
+
+## 30-second start
+
+```bash
+git clone https://github.com/pppeterlin/Memosyne && cd Memosyne
+pip install -e .
+memosyne quickstart           # detects your LLM provider, runs end-to-end demo
+```
+
+`quickstart` builds the sample vault, runs a golden eval, and shows two example searches — all offline, no private data involved. Pick whichever LLM backend you have (local Ollama, DeepSeek API, OpenRouter, …) and `memosyne providers list` shows what's ready.
+
+Then point Memosyne at your own life:
+
+```bash
+cp my_journal.md spring/
+memosyne ingest               # routes the file, enriches it, indexes it
+memosyne search "what was I thinking about last March?" --walk deep
+```
+
+For Claude Desktop / Cursor MCP integration, jump to [MCP Integration](#mcp-integration-claude-desktop--cursor).
+
+---
+
 ## Core Premise
 
 AI capabilities compound every quarter, but no model — however powerful — can know *you* from a cold start. The texture of your life (who you've spent time with, what you've decided, how you've changed) lives scattered across journals, chats, and notes.
@@ -34,22 +58,42 @@ Memosyne addresses all four with a bio-inspired retrieval stack.
 
 ## Architecture
 
+```mermaid
+%%{init: {'theme':'base', 'themeVariables': {'background':'#f5f5f5', 'primaryColor':'#f5f5f5', 'lineColor':'#666', 'primaryBorderColor':'#888'}}}%%
+flowchart TB
+    classDef stage fill:#e8f4f8,stroke:#5a8aa6,color:#222
+    classDef vault fill:#f8f0e0,stroke:#a68a5a,color:#222
+    classDef external fill:#eee,stroke:#888,color:#444
+
+    SRC[".md / .pages / Gemini export / any text"]:::external
+    SPRING["spring/<br/><i>The Spring</i><br/>drop zone"]:::external
+
+    SRC --> SPRING
+
+    subgraph PIPE["ingest pipeline"]
+        DISC["Discernment<br/>format → Muse routing"]:::stage
+        WEAVE["Weaving<br/>LLM entity + theme extraction"]:::stage
+        INSCRIBE["Inscription<br/>chunk + embed + index"]:::stage
+        DISC --> WEAVE --> INSCRIBE
+    end
+
+    SPRING --> PIPE
+
+    subgraph VAULT["Personal_Brain_DB/ (The Vault)"]
+        P10["10_Profile/<br/>semantic — who you are"]:::vault
+        P20["20_AI_Chats/<br/>working — recent AI conversations"]:::vault
+        P30["30_Journal/<br/>episodic — life events"]:::vault
+        P40["40_Projects/<br/>procedural — project notes"]:::vault
+        P50["50_Knowledge/<br/>semantic — learnings"]:::vault
+    end
+
+    INSCRIBE --> VAULT
+
+    AGENT["Agent (Claude / Cursor / …)<br/>via memosyne search · MCP"]:::external
+    VAULT --> AGENT
 ```
-Raw input (.pages / .md / Gemini export / any text)
-    ↓  spring/  (The Spring of Mnemosyne — drop zone)
-ingest.py    — The Spring Ritual   (format detection + Nine Muses routing)
-    ↓
-enrich.py    — The Weaving         (LLM-based entity extraction; backend of your choice)
-    ↓
-vectorize.py — The Inscription     (indexing)
-    ↓
-Personal_Brain_DB/  (The Vault)
-    ├── 10_Profile/    Semantic Memory   (who you are)
-    ├── 20_AI_Chats/   Working Memory    (recent AI conversations)
-    ├── 30_Journal/    Episodic Memory   (life events, journals)
-    ├── 40_Projects/   Procedural Memory (project notes)
-    └── 50_Knowledge/  Semantic Memory   (knowledge accumulation)
-```
+
+The pipeline preserves human-readable Markdown at every stage — you can `cat` any file in `Personal_Brain_DB/` and read it. The vector index, BM25, and Tapestry graph are derived; the source of truth is always the `.md` itself.
 
 ---
 
@@ -147,31 +191,32 @@ python3 Personal_Brain_DB/00_System/slumber.py --forget --dry-run
 ### Requirements
 
 - Python 3.10+
-- A local LLM endpoint of your choice for enrichment, contextualization, and local chat (e.g. [Ollama](https://ollama.ai), llama.cpp, LM Studio, vLLM). Memosyne does not bundle a runtime or assume a specific model — pick one that fits your hardware and configure the endpoint in your local `.env` / `memosyne.toml`.
-- Cloud LLM access is optional and opt-in; see [docs/privacy.md](docs/privacy.md).
+- One LLM backend (any one of these works — `memosyne providers list` shows status):
+  - **Local Ollama** (private, free): `brew install ollama && ollama pull gemma3:4b`
+  - **DeepSeek API** (cheap cloud, frontier reasoning): `DEEPSEEK_API_KEY` in `.env`
+  - **OpenRouter** (multi-provider routing): drop key into `./openrouter-key`
+  - **OpenAI-compatible proxy** (LiteLLM, aiclient-2-api, …): `PROXY_BASE_URL` + `PROXY_API_KEY`
+
+Cloud LLM access is opt-in; full privacy model in [docs/privacy.md](docs/privacy.md).
 
 ```bash
-# Clone and set up environment
-git clone https://github.com/yourname/memosyne
-cd memosyne
-python -m venv .venv
-source .venv/bin/activate
-pip install -r Personal_Brain_DB/00_System/requirements.txt
+git clone https://github.com/pppeterlin/Memosyne && cd Memosyne
+python -m venv .venv && source .venv/bin/activate
+pip install -e .
+memosyne health         # confirm every artifact + backend is reachable
+memosyne quickstart     # demo against the public sample vault
 ```
 
 ### Ingest your first memory
 
 ```bash
-# Drop any file into the spring
-cp my_journal.md spring/
-
-# Run The Spring Ritual
-python3 Personal_Brain_DB/00_System/ingest.py
+cp my_journal.md spring/             # drop file into The Spring
+memosyne ingest                      # routes, enriches, indexes
 
 # Options
-python3 Personal_Brain_DB/00_System/ingest.py --dry-run     # preview only
-python3 Personal_Brain_DB/00_System/ingest.py --no-enrich   # skip LLM enrichment
-python3 Personal_Brain_DB/00_System/ingest.py --rebuild     # full index rebuild
+memosyne ingest --dry-run            # preview only
+memosyne ingest --no-enrich          # skip LLM enrichment (faster)
+memosyne rebuild --full              # full index rebuild (only when schema changed)
 ```
 
 ### Search your memories
@@ -338,27 +383,65 @@ All personal memory content (folders 10–50) is excluded from git via `.gitigno
 
 ---
 
+## Glossary — mythology ↔ engineering
+
+The codebase uses Greek-mythology naming to give each subsystem a human voice. If you're reading source and want the engineering meaning:
+
+| Mythological name | Engineering meaning |
+|---|---|
+| **Mnemosyne** | The titaness of memory; project namesake |
+| **The Spring** (`spring/`) | Drop zone where raw files arrive before ingest |
+| **The Vault** (`Personal_Brain_DB/`) | Canonical Markdown storage; source of truth |
+| **The Nine Muses** | File-type routers (Clio = journal, Calliope = AI chats, …) |
+| **Oracle of Mneme** (`enrich.py`) | LLM-based entity + theme extractor |
+| **The Tapestry** (`tapestry.py` / `tapestry.json`) | Knowledge graph: memories ↔ people / places / events |
+| **The Chronicle of Mneme** (`mneme_weight.py`) | Access log + ACT-R cognitive decay rerank |
+| **The Illumination** | Contextual Retrieval — paragraph summaries injected before embedding |
+| **The Triple Echo** | HyQE — hypothetical questions per chunk for multi-view retrieval |
+| **The Augury** / **Augury Replay** | Retrieval evaluation (golden eval + real-query replay) |
+| **Aletheia** | Correction layer: edit / invalidate / revert facts with full audit |
+| **The Rite of Slumber** | Memory consolidation: reflect (insights) + Hebbian (edge boost) + Lethe (dormant marker) |
+| **The Lethe Protocol** | Strategic forgetting — mark long-dormant memories without deleting |
+| **The Open Threshold** | MCP HTTP transport with bearer-token auth |
+| **The Self-Weaving Tapestry** | v0.5 deterministic link extraction (frontmatter + body shorthand → graph edges) |
+| **The Codex of Skills** | `00_System/skills/` — fat skill docs for MCP-aware agents |
+
+The mythology is a memory aid, not a barrier. Every command in the CLI uses the plain engineering verb (`ingest`, `search`, `rebuild`, …); the poetry lives in output strings and the docstrings.
+
+---
+
 ## Roadmap
 
-- [x] Format-agnostic ingestion (`.pages`, `.md`, Gemini JSON)
-- [x] Ground-truth-preserving LLM enrichment
-- [x] Hybrid search: Dense + BM25 + Graph → RRF
-- [x] Contextual Retrieval — The Illumination
-- [x] ACT-R cognitive reranking — The Chronicle of Mneme
-- [x] PPR Spreading Activation
-- [x] Memory consolidation — The Rite of Slumber
-- [x] MCP Server (6 tools)
-- [ ] **Retrieval v2** (branch: `v0.2`) — see [優化方案_索引與保存管理.md](優化方案_索引與保存管理.md)
-  - [ ] The Augury Benchmark — Recall@K / MRR / P@5 golden set
-  - [ ] The Naming Rite — canonical entity resolution
-  - [ ] Parent-child chunking (Small-to-Big)
-  - [ ] The Triple Echo — multi-view embeddings (raw + summary + HyQE)
-  - [ ] The Invocation — Muse-aware query router
-  - [ ] HippoRAG 2 phrase+passage PPR upgrade
-  - [ ] Bi-temporal Tapestry (valid_time vs. ingest_time)
-  - [ ] The Ordeal — CRUD-style conflict resolution
-  - [ ] The Mirror of Truth — Self-RAG critique on enrichment
-  - [ ] The Resonance — A-MEM style memory evolution
+**Shipped (v0.1 – v0.6)**
+
+- [x] Format-agnostic ingestion (`.pages`, `.md`, Gemini export, journal append)
+- [x] Ground-truth-preserving LLM enrichment + deterministic link extractor
+- [x] Hybrid search: Dense + BM25 + Graph → RRF + ACT-R rerank
+- [x] Contextual Retrieval (Illumination) + HyQE (Triple Echo) + Parent-child chunking
+- [x] PPR Spreading Activation + Two-pass walk (fast graph alternative)
+- [x] Memory consolidation: Reflection + Hebbian + Lethe + Naming + Ordeal + Aggregation
+- [x] MCP Server (stdio + HTTP with bearer-token auth)
+- [x] Augury Replay — capture real queries → replay against current code → drift report
+- [x] Per-prefix ACT-R decay + backlink boost
+- [x] Aletheia correction layer with full audit + revert
+- [x] **Turn-level dedup (v0.6)** — Gemini continuations / journal append no longer drop content silently
+- [x] Bi-temporal Tapestry (valid_time vs. ingest_time)
+
+**In progress (v0.7 — Open Threshold)**
+
+- [x] `memosyne quickstart` + `providers list/test` for first-run experience
+- [x] CLI consistency: `enrich` / `contextualize` / `hyqe` / `auth` as first-class subcommands
+- [x] `rebuild` defaults to incremental (was always full-rebuild)
+- [x] Release script (`make release VERSION=X.Y.Z`) with pre-flight gates
+- [ ] Docs reorganization (getting-started / using / architecture splits)
+- [ ] All error messages have actionable next-step hints
+
+**Deferred to future releases**
+
+- [ ] Partial enrichment merge (only-enrich-new-turns) — v0.8
+- [ ] Aletheia turn-level correction
+- [ ] OAuth 2.1 for MCP HTTP transport
+- [ ] Slack / Discord / WhatsApp parsers (architecture supports; need fixtures)
 - [ ] Installable Python package (`pip install memosyne`)
 
 ---
