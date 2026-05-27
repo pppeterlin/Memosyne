@@ -333,6 +333,42 @@ Codebase 用希臘神話命名讓每個子系統有人性的聲音。讀原始�
 
 ---
 
+## 路線圖
+
+**已出貨（v0.1 – v0.6）**
+
+- [x] 格式無關的入庫流程（`.pages`、`.md`、Gemini 匯出、journal 追寫）
+- [x] Ground-truth-preserving LLM 增強 + deterministic link extractor
+- [x] 混合檢索：Dense + BM25 + Graph → RRF + ACT-R 重排
+- [x] Contextual Retrieval（Illumination）+ HyQE（Triple Echo）+ Parent-child 切片
+- [x] PPR Spreading Activation + Two-pass walk（快速圖譜走訪）
+- [x] 記憶鞏固：Reflection + Hebbian + Lethe + Naming + Ordeal + Aggregation
+- [x] MCP Server（stdio + HTTP 含 bearer token 認證）
+- [x] Augury Replay — 擷取真實查詢 → 重播比對現行 code → drift 報告
+- [x] Per-prefix ACT-R decay + backlink boost
+- [x] Aletheia 修正層含完整 audit + revert
+- [x] **Turn-level 去重（v0.6）** — Gemini 續寫 / journal 追寫不再靜默丟資料
+- [x] Bi-temporal Tapestry（valid_time vs. ingest_time）
+
+**進行中（v0.7 — The Open Threshold）**
+
+- [x] `memosyne quickstart` + `providers list/test` 首次體驗
+- [x] CLI 一致性：`enrich` / `contextualize` / `hyqe` / `auth` 成為一級 subcommand
+- [x] `rebuild` 預設增量（過去永遠 full rebuild）
+- [x] Release 腳本（`make release VERSION=X.Y.Z`）含 pre-flight 守門
+- [ ] Docs 重組（getting-started / using / architecture 三層分組）
+- [ ] 所有錯誤訊息都有可執行的 next-step 提示
+
+**延後到未來版本**
+
+- [ ] Partial enrichment merge（只 enrich 新 turns）— v0.8
+- [ ] Aletheia turn-level correction
+- [ ] OAuth 2.1 給 MCP HTTP transport
+- [ ] Slack / Discord / WhatsApp parser（架構已支援，需 fixture）
+- [ ] 可安裝 PyPI 套件（`pip install memosyne`）
+
+---
+
 ## 致謝與參考文獻（Acknowledgements & References）
 
 Memosyne 站在許多優秀研究與開源專案的肩膀上。以下是架構中採用的技術、以及 [優化方案_索引與保存管理.md](優化方案_索引與保存管理.md) 規劃的 v2 升級所依據的文獻。該有的致敬不能少。
