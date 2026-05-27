@@ -4,7 +4,73 @@ All notable changes to Memosyne are recorded here. Format inspired by
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow the project's `vMAJOR.MINOR` release sequence.
 
-## [Unreleased] — v0.6 accumulating sources
+## [Unreleased] — v0.7 The Open Threshold
+
+Polish for adoption. Lowers the bar for a first-time user to install,
+run a demo, and start trusting Memosyne with real memories. **Zero
+changes** to the retrieval engine.
+
+### Added
+
+- **`memosyne quickstart`** — first-run experience. Detects available
+  LLM providers, runs `eval --sample`, prints two example searches
+  with the sample vault, then points at the real-vault workflow.
+- **`memosyne providers list` / `memosyne providers test <name>`** —
+  single-screen view of all four backends (ollama / openrouter /
+  deepseek / proxy) with status markers and one-call connectivity
+  test.
+- **`memosyne enrich` / `contextualize` / `hyqe`** — first-class
+  subcommands; daily ops no longer require
+  `cd Personal_Brain_DB/00_System`.
+- **`memosyne search --return-parent`** — exposes the small-to-big
+  retrieval flag that the underlying search has supported since v0.5
+  but was unreachable from CLI.
+- **`scripts/release.sh X.Y.Z`** + `make release VERSION=X.Y.Z` — the
+  Rite of Release. Pre-flight gates (clean tree, on master, in sync
+  with origin, `make verify` green, tag-doesn't-exist) prevent the
+  v0.5 "forgot to tag" incident from repeating.
+- **DeepSeek official API as first-class provider** (already shipped
+  in v0.6 commit but elevated by `providers list` in v0.7).
+- **30-second start** in README + mermaid architecture diagram +
+  mythology→engineering glossary.
+
+### Changed
+
+- **`memosyne rebuild`** defaults to incremental; `--full` opt-in.
+  Pre-v0.7 it always passed `--rebuild` to vectorize.py, wiping
+  21K+ chunks even for a single new file. Real-world ingest is
+  10× faster now.
+- **vectorize progress bar** uses tqdm (or throttled print fallback)
+  instead of `\r`-spam that destroyed log file scrollback.
+- **Ephemeral artifacts** (`dirty_paths.txt`, opt-in `query_log.jsonl`)
+  no longer trigger health `warn` when absent — they're consumed and
+  removed by design.
+- **Ollama health hint** upgraded from "Start Ollama before…" to two
+  explicit choices (start Ollama OR pick a cloud backend via
+  `memosyne providers list`).
+- **`spring/*.md` gitignored** with `!spring/README.md` exception.
+  Personal drop-zone files were tracked by accident before; never
+  again.
+- **README roadmap** rewritten to reflect shipped v0.1–v0.6 + in-
+  progress v0.7, removing the stale "Retrieval v2" punch list.
+
+### Fixed
+
+- **ingest dry_run no longer pollutes the turn ledger** (v0.6 backfill
+  path missed a `dry_run` guard). The data written was correct but
+  violated the dry-run contract.
+- **ingest bare-name Gemini export warning** — when a `.md` looks
+  like a Gemini export but lacks the `_<convhash>.md` suffix, ingest
+  now prints exactly how to fix it instead of silently duplicating
+  the conversation.
+
+### Notes
+
+- No retrieval-quality changes; v0.2 baseline still applies.
+- Phase 3 partial enrichment merge (v0.6 deferred) still pending —
+  next release.
+
+## [0.6.0] — 2026-05-27 — Accumulating sources
 
 ### Added
 

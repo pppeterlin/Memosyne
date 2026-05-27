@@ -725,9 +725,19 @@ def build_index(rebuild: bool = False):
         print(f"[VECTOR] 無新 chunks（資料庫已有 {len(existing_ids)} 個）")
         return
 
-    print(f"[VECTOR] 新增 {len(new_chunks)} 個 chunks（共 {len(all_chunks)} 個）\n")
+    print(f"[VECTOR] 新增 {len(new_chunks)} 個 chunks（共 {len(all_chunks)} 個）")
 
+    # tqdm if available (transitive dep via sentence-transformers); falls back
+    # to a plain loop if not. Either way we no longer spam 21K lines via
+    # `print(..., end="\r")` — that pattern destroys terminal scrollback when
+    # piped to a log file (each carriage-return becomes a separate line).
     BATCH = 64
+    try:
+        from tqdm import tqdm as _tqdm
+        progress = _tqdm(total=len(new_chunks), unit="chunk", desc="[VECTOR]")
+    except ImportError:
+        progress = None
+
     for i in range(0, len(new_chunks), BATCH):
         batch = new_chunks[i:i + BATCH]
         col.add(
@@ -735,10 +745,16 @@ def build_index(rebuild: bool = False):
             documents = [c["text"] for c in batch],
             metadatas = [c["meta"] for c in batch],
         )
-        done = min(i + BATCH, len(new_chunks))
-        print(f"  [{done}/{len(new_chunks)}] 已索引", end="\r")
+        if progress is not None:
+            progress.update(len(batch))
+        elif (i // BATCH) % 16 == 0:  # fallback: print every 1024 chunks
+            done = min(i + BATCH, len(new_chunks))
+            print(f"  [{done}/{len(new_chunks)}] indexed")
 
-    print(f"\n[VECTOR] 完成！資料庫共 {col.count()} 個 chunks")
+    if progress is not None:
+        progress.close()
+
+    print(f"[VECTOR] 完成！資料庫共 {col.count()} 個 chunks")
     _print_stats(col)
 
     # ── 同步建立 BM25 索引 ──
@@ -1520,6 +1536,10 @@ def main():
     parser.add_argument("--walk", choices=["deep", "fast", "off"], default="deep",
                         help="graph walk strategy: deep=PPR spreading (default), "
                              "fast=two-pass walk, off=skip graph contribution")
+    parser.add_argument("--return-parent", action="store_true",
+                        help="replace each result's snippet with its full parent "
+                             "H2 section (small-to-big retrieval; helpful when "
+                             "default snippets are too thin to read)")
     parser.add_argument("--contextualize", action="store_true",
                         help="The Illumination — 生成語境化段落摘要（Contextual Retrieval）")
     parser.add_argument("--hyqe",          action="store_true",
@@ -1531,6 +1551,7 @@ def main():
     if args.query:
         results = search(args.query, args.top, args.type,
                          record_access=not args.no_record_access,
+                         return_parent=args.return_parent,
                          walk=args.walk)
         if not results:
             print("The waters are still. No echoes found.")

@@ -167,22 +167,37 @@ def _collect_health_checks() -> list[HealthCheck]:
             "Install runtime deps: pip install -r Personal_Brain_DB/00_System/requirements.txt",
         ))
 
+    expected_keys = {
+        "chronicle_jsonl",
+        "chronicle_db",
+        "bm25_index",
+        "contextual_cache",
+        "hyqe_cache",
+        "tapestry_db",
+        "muse_centroids",
+        "chroma_db",
+    }
     for artifact in artifact_manifest():
-        expected = artifact["key"] in {
-            "chronicle_jsonl",
-            "chronicle_db",
-            "bm25_index",
-            "contextual_cache",
-            "hyqe_cache",
-            "tapestry_db",
-            "muse_centroids",
-            "chroma_db",
-        }
         exists = bool(artifact["exists"])
+        is_expected = artifact["key"] in expected_keys
+        is_ephemeral = bool(artifact.get("ephemeral"))
+
+        if is_expected:
+            # Must exist; absent → fail (red)
+            status: bool | None = exists
+        elif is_ephemeral:
+            # Ephemeral marker / opt-in log: absent IS the normal state.
+            # Only flag as info-ok regardless of existence; never warn.
+            status = True
+        else:
+            # Unknown artifact: best-effort warn if absent (catches regressions)
+            status = exists if exists else None
+
         checks.append(_check(
-            exists if expected else None,
+            status,
             artifact["key"],
             artifact["path"],
+            "" if is_ephemeral else
             "Run the related rebuild command or restore the private artifact from backup.",
         ))
 
@@ -199,7 +214,8 @@ def _collect_health_checks() -> list[HealthCheck]:
         ollama_ok,
         "Ollama API",
         ollama_detail,
-        "Start Ollama before enrichment, contextualization, HyQE, or local chat.",
+        "Start Ollama with `ollama serve &` then `ollama pull <model>`,\n"
+        "       OR pick a cloud backend instead: `memosyne providers list`.",
     ))
 
     secret_ok, secret_detail = _check_secret_files()
@@ -246,6 +262,121 @@ def cmd_init(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_quickstart(_: argparse.Namespace) -> int:
+    """
+    v0.7 — The Threshold Ritual
+
+    First-run experience: prove the whole pipeline works against the
+    public sample vault, in under 5 minutes, without the user needing
+    to read any docs first.
+
+    Flow:
+      1. Confirm a usable LLM provider exists (offer choices if not)
+      2. Run eval --sample (rebuilds sample indexes + runs golden eval)
+      3. Run two example searches and pretty-print the top results
+      4. Print 'next steps' that point at the real-vault workflow
+    """
+    print("🜍 Memosyne — The Threshold Ritual")
+    print()
+
+    # Step 1: provider check
+    sys.path.insert(0, str(SYSTEM_DIR))
+    try:
+        import providers as _providers
+    except ImportError as e:
+        print(f"[fail] providers module unavailable: {e}")
+        print("       Run `pip install -e .` from the repo root and retry.")
+        return 1
+
+    print("Step 1 / 4 — Detect LLM provider")
+    ready = []
+    for p in _providers.PROVIDERS:
+        status, detail = _providers._STATUS_FN[p.name]()
+        marker = "✓" if status == "ok" else "—" if status == "no-key" else "✗"
+        print(f"   {marker} {p.name:12} {status:12} {detail[:60]}")
+        if status == "ok":
+            ready.append(p.name)
+
+    if not ready:
+        print()
+        print("No LLM provider is ready. Pick one and configure it:")
+        print()
+        print("   A. Local (private, free): brew install ollama && ollama pull gemma3:4b")
+        print("   B. DeepSeek (cheap cloud): export DEEPSEEK_API_KEY=sk-... in .env")
+        print("   C. OpenRouter (multi):    drop key into ./openrouter-key")
+        print()
+        print("Then rerun: memosyne quickstart")
+        return 1
+
+    print(f"   → {ready[0]} is ready; quickstart will use it.")
+    print()
+
+    # Step 2: sample eval (proves indexing + retrieval round-trip)
+    print("Step 2 / 4 — Build sample-vault indexes and evaluate")
+    print("   (this rebuilds Chroma + BM25 + Tapestry against sample_vault/_eval/golden.yaml)")
+    ns = argparse.Namespace(
+        sample=True, golden="", top_k=10, config="quickstart",
+    )
+    rc = cmd_eval(ns)
+    if rc != 0:
+        print()
+        print("   eval failed; see output above. quickstart aborting.")
+        return rc
+    print()
+
+    # Step 3: example searches
+    print("Step 3 / 4 — Two example searches against sample_vault")
+    sample_vault_dir = ROOT / "sample_vault"
+    env_overrides = {
+        "MEMOSYNE_VAULT_DIR":    str(sample_vault_dir),
+        "MEMOSYNE_ARTIFACT_DIR": str(sample_vault_dir / "_artifacts"),
+    }
+    for q in ["watercolor", "Tokyo trip"]:
+        print(f"\n   $ memosyne search {q!r} --top 3 --no-record-access")
+        _run_script(
+            "vectorize.py",
+            ["--query", q, "--top", "3", "--no-record-access"],
+            env_overrides=env_overrides,
+        )
+
+    # Step 4: next steps
+    print()
+    print("Step 4 / 4 — Next")
+    print("   Add your own memory:")
+    print("     cp your_journal.md spring/")
+    print("     memosyne ingest")
+    print()
+    print("   Search your real vault (after first ingest):")
+    print("     memosyne search '<question>' --walk deep")
+    print()
+    print("   Periodic maintenance:")
+    print("     memosyne slumber --reflect --days 14")
+    print()
+    print("   See `memosyne --help` for the full command surface.")
+    print()
+    print("🌊 The Spring of Memosyne is open. Begin the offering.")
+    return 0
+
+
+def cmd_rebuild(ns: argparse.Namespace) -> int:
+    """
+    v0.7: rebuild defaults to incremental. Pass --full to wipe everything.
+
+    Incremental path:
+      - vectorize.py with no flags
+      - picks up new chunks (id-not-in-existing filter)
+      - consumes dirty_paths.txt (v0.6 turn-aware update marker)
+      - rebuilds BM25 from current chunks
+
+    Full path (--full):
+      - vectorize.py --rebuild
+      - drops the Chroma collection and re-embeds every chunk
+      - slow; use only when schema changed or index is corrupt
+    """
+    args = ["--rebuild"] if ns.full else []
+    return _run_script("vectorize.py", args)
+
+
 def cmd_search(ns: argparse.Namespace) -> int:
     args = ["--query", ns.query, "--top", str(ns.top)]
     if ns.type:
@@ -254,6 +385,8 @@ def cmd_search(ns: argparse.Namespace) -> int:
         args.append("--no-record-access")
     if ns.walk and ns.walk != "deep":
         args.extend(["--walk", ns.walk])
+    if ns.return_parent:
+        args.append("--return-parent")
     return _run_script("vectorize.py", args)
 
 
@@ -340,6 +473,12 @@ def build_parser() -> argparse.ArgumentParser:
     init = subparsers.add_parser("init", help="ensure core directories exist")
     init.set_defaults(func=cmd_init)
 
+    quickstart = subparsers.add_parser(
+        "quickstart",
+        help="first-run experience: detect provider, build sample indexes, run two searches",
+    )
+    quickstart.set_defaults(func=cmd_quickstart)
+
     health = subparsers.add_parser("health", help="check runtime and artifact health")
     health.add_argument("--json", action="store_true", help="emit machine-readable health results")
     health.set_defaults(func=cmd_health)
@@ -360,10 +499,41 @@ def build_parser() -> argparse.ArgumentParser:
         help="graph walk strategy: deep=PPR spreading (default), "
              "fast=two-pass walk, off=skip graph contribution",
     )
+    search.add_argument(
+        "--return-parent",
+        action="store_true",
+        help="replace snippet with the full parent H2 section "
+             "(small-to-big retrieval)",
+    )
     search.set_defaults(func=cmd_search)
 
     _add_passthrough(subparsers, "ingest", "run The Spring Ritual", "ingest.py")
-    _add_passthrough(subparsers, "rebuild", "rebuild retrieval indexes", "vectorize.py", ["--rebuild"])
+
+    # `rebuild` used to always pass --rebuild (full wipe-and-rebuild). v0.7
+    # changes the default to incremental — for daily ingest workflow that
+    # only needs to embed a few new chunks, full rebuild is grossly wasteful
+    # (21K chunks re-embedded for ~30 new ones). Pass --full to force.
+    rebuild = subparsers.add_parser(
+        "rebuild",
+        help="rebuild retrieval indexes (default: incremental; use --full to wipe and rebuild)",
+    )
+    rebuild.add_argument(
+        "--full",
+        action="store_true",
+        help="wipe Chroma + BM25 and rebuild from scratch (slow; only when schema "
+             "changed or index is suspected corrupt)",
+    )
+    rebuild.set_defaults(func=cmd_rebuild)
+
+    _add_passthrough(subparsers, "enrich",
+                     "run The Weaving (LLM entity + theme enrichment)",
+                     "enrich.py")
+    _add_passthrough(subparsers, "contextualize",
+                     "The Illumination — generate contextual paragraph summaries",
+                     "vectorize.py", ["--contextualize"])
+    _add_passthrough(subparsers, "hyqe",
+                     "The Triple Echo — generate hypothetical questions per chunk",
+                     "vectorize.py", ["--hyqe"])
     _add_passthrough(subparsers, "slumber", "run The Rite of Slumber", "slumber.py")
     _add_passthrough(subparsers, "chronicle", "inspect The Chronicle of Mneme", "mneme_weight.py")
     _add_passthrough(subparsers, "tapestry", "inspect or rebuild The Tapestry", "tapestry.py")
@@ -408,6 +578,12 @@ def build_parser() -> argparse.ArgumentParser:
         subparsers, "auth",
         "manage HTTP bearer tokens (create / list / revoke)",
         "auth.py",
+    )
+
+    _add_passthrough(
+        subparsers, "providers",
+        "inspect LLM provider status and test connectivity (list / test)",
+        "providers.py",
     )
 
     return parser
