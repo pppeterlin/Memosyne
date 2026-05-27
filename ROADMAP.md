@@ -1,7 +1,8 @@
 # Memosyne 路線圖
 
-> 範圍：v0.2 檢索凍結、v0.3 使用產品化、v0.4 開源發布準備。
-> 本文件負責 release 層級規劃；`TODO_retrieval_v2.md` 繼續作為細項任務追蹤。
+> 範圍：v0.2 之後的所有 release 層級規劃。
+> 每個 release 有自己的 `docs/v0.X_*.md` 計畫文件；本檔做總覽。
+> v0.2-era 的細項追蹤 (`TODO_retrieval_v2.md`) 已歸檔到 `_archive/`。
 > 文檔與示例資料的隱私規範以 `AGENTS.md` 為準。
 
 ## 定位
@@ -48,7 +49,7 @@ Memosyne 是一個本地優先的個人記憶基礎設施層，供 AI Agent 透�
 - 最新 Eternal Mirror 報告已提交或明確引用。
 - Augury golden set 已建立，且使用合成或脫敏問題。
 - `_vault` 產物變更已決定要提交或忽略。
-- `TODO_retrieval_v2.md` 狀態與實際 repo 一致。
+- 細項任務追蹤已對齊實際 repo（v0.2 era 的 TODO 見 `_archive/`）。
 
 ## v0.3：使用產品化
 
@@ -118,11 +119,15 @@ python Personal_Brain_DB/00_System/slumber.py --stats
 
 ## 目前建議優先順序
 
-立即工作應以 v0.2 收口為主：
+v0.7 收口中（PR #13），主題 The Open Threshold — 降低使用門檻。完成標準與細節見
+[docs/v0.7_open_threshold.md](docs/v0.7_open_threshold.md)。
 
-1. 同步 `TODO_retrieval_v2.md` 與實際狀態。
-2. 決定 dirty `_vault` submodule 變更要提交或忽略。
-3. 建立小型 Augury golden set，並確保只使用合成或脫敏問題。
-4. 記錄目前檢索基線作為 freeze point。
+v0.7 merge 之後的候選方向：
 
-完成後再進入 v0.3 packaging 與 CLI 工作。
+1. **v0.8 — partial enrichment**：只 enrich 新 turns、merge 進現有 YAML
+   （v0.6 deferred 項，對大對話續寫的成本影響大）。
+2. **Aletheia turn-level correction**：v0.6 後記憶身分到 turn 層，correction 也該下沉。
+3. **OAuth 2.1 for MCP HTTP**：等真實有人從外部連 HTTP 後再做。
+4. **PyPI 套件化**：`pip install memosyne` 而不是 `pip install -e .`。
+
+每個方向值得獨立 planning doc 再開分支；不要在 master 直接動手。
