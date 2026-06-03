@@ -47,6 +47,11 @@ SYSTEM_DIR = Path(__file__).parent
 EXCLUDE_DIRS  = {"00_System"}
 EXCLUDE_FILES = {"README.md", ".cursorrules"}
 
+# 單次 LLM enrichment 餵入的最大字元數。超過此長度的長檔（如一次性匯入的
+# 大型個人 profile）會被切成多段、各自 enrich，再合併結果——避免只看開頭
+# 而漏掉後段的 entities / personal_facts（The Weaving must see the whole cloth）。
+ENRICH_SEGMENT_CHARS = 3000
+
 # 每次 LLM 呼叫後的結果格式
 EMPTY_ENRICHMENT = {
     "entities": {
@@ -206,24 +211,82 @@ Memory fragment:
 """
 
 
-def call_llm(title: str, content: str, model: str, filename_hint: list = None,
-             is_ai_chat: bool = False) -> dict:
-    """呼叫 LLM（Ollama / OpenRouter），回傳 enrichment dict。"""
+def _split_for_enrich(content: str, seg_size: int = ENRICH_SEGMENT_CHARS) -> list[str]:
+    """把長文切成 ≤seg_size 的段落，優先在標題 / 空行邊界切，避免切斷句子。
+
+    短於 seg_size 時回傳單元素 list（行為與舊版一致）。
+    """
+    if len(content) <= seg_size:
+        return [content]
+
+    # 以「標題行」與「空行分隔的段落」為自然邊界
+    blocks = re.split(r'(?=^#{1,6}\s)|\n{2,}', content, flags=re.M)
+    segments: list[str] = []
+    buf = ""
+    for block in blocks:
+        if not block:
+            continue
+        # 單一 block 本身就超長 → 硬切
+        if len(block) > seg_size:
+            if buf:
+                segments.append(buf)
+                buf = ""
+            for i in range(0, len(block), seg_size):
+                segments.append(block[i:i + seg_size])
+            continue
+        if len(buf) + len(block) + 2 > seg_size:
+            segments.append(buf)
+            buf = block
+        else:
+            buf = f"{buf}\n\n{block}" if buf else block
+    if buf:
+        segments.append(buf)
+    return segments
+
+
+def _merge_enrichments(parts: list[dict]) -> dict:
+    """合併多段 enrichment：entities/themes/personal_facts 取聯集去重（保序），
+    period/chat_category 取第一個非空，importance 取最高。"""
+    importance_rank = {"low": 0, "medium": 1, "high": 2}
+
+    def _union(seqs: list[list]) -> list:
+        seen, out = set(), []
+        for seq in seqs:
+            for item in (seq or []):
+                if item not in seen:
+                    seen.add(item)
+                    out.append(item)
+        return out
+
+    merged = {
+        "entities": {
+            "locations": _union([p.get("entities", {}).get("locations", []) for p in parts]),
+            "people":    _union([p.get("entities", {}).get("people", [])    for p in parts]),
+            "events":    _union([p.get("entities", {}).get("events", [])    for p in parts]),
+            "emotions":  _union([p.get("entities", {}).get("emotions", [])  for p in parts]),
+        },
+        # 整篇主題上限放寬到 6（單段 prompt 仍限 4）
+        "themes":         _union([p.get("themes", []) for p in parts])[:6],
+        "period":         next((p.get("period") for p in parts if p.get("period")), ""),
+        "importance":     max((p.get("importance", "medium") for p in parts),
+                              key=lambda v: importance_rank.get(v, 1)),
+        # 大檔通常承載大量個人事實，上限放寬到 20
+        "personal_facts": _union([p.get("personal_facts", []) for p in parts])[:20],
+        "chat_category":  next((p.get("chat_category") for p in parts if p.get("chat_category")), ""),
+    }
+    return merged
+
+
+def _call_llm_once(title: str, content: str, model: str, hint_str: str,
+                   is_ai_chat: bool) -> dict:
+    """對單一段落呼叫 LLM，回傳 enrichment dict。"""
     from llm_client import chat_text
-
-    # 截斷過長內容（避免超出 context window）
-    content_trimmed = content[:3000]
-    if len(content) > 3000:
-        content_trimmed += "\n...[截斷]"
-
-    # 格式化 filename_hint
-    hint_str = "、".join(filename_hint) if filename_hint else "（無）"
 
     prompt = ENRICHMENT_PROMPT.format(
         title=title,
         filename_hint=hint_str,
         is_ai_chat=str(is_ai_chat),
-        content=content_trimmed,
+        content=content,
     )
 
     raw = chat_text(
@@ -251,6 +314,27 @@ def call_llm(title: str, content: str, model: str, filename_hint: list = None,
             return json.loads(cleaned)
         except json.JSONDecodeError:
             raise ValueError(f"JSON 解析失敗（{e}）\n原始：{json_str[:400]}")
+
+
+def call_llm(title: str, content: str, model: str, filename_hint: list = None,
+             is_ai_chat: bool = False) -> dict:
+    """呼叫 LLM（Ollama / OpenRouter），回傳 enrichment dict。
+
+    長檔自動分段 enrich 後合併（見 _split_for_enrich / _merge_enrichments），
+    確保整篇都被 Oracle 讀過，而非只看前 ENRICH_SEGMENT_CHARS 字。
+    """
+    hint_str = "、".join(filename_hint) if filename_hint else "（無）"
+
+    segments = _split_for_enrich(content)
+    if len(segments) == 1:
+        return _call_llm_once(title, segments[0], model, hint_str, is_ai_chat)
+
+    print(f"\n    [分段 enrich] 全文 {len(content)} 字 → {len(segments)} 段 ... ",
+          end="", flush=True)
+    parts: list[dict] = []
+    for seg in segments:
+        parts.append(_call_llm_once(title, seg, model, hint_str, is_ai_chat))
+    return _merge_enrichments(parts)
 
 
 
@@ -411,6 +495,13 @@ def critique_enrichment(enrichment: dict, original_text: str, model: str) -> dic
     period = enrichment.get("period", "")
 
     if not facts and not themes and not period:
+        return enrichment
+
+    # 長檔的 enrichment 來自多段合併，但 critique 只能看 text[:3000]；
+    # 若在此驗證，後段抽出的 facts 會因「不在前 3000 字」被誤判 unsupported 而刪除。
+    # 故長檔跳過 critique（分段 critique 屬另一範疇）。
+    if len(original_text) > ENRICH_SEGMENT_CHARS:
+        print("  [Critique] 長檔已分段 enrich，跳過 critique（避免誤刪後段 facts）")
         return enrichment
 
     claims = {
