@@ -53,6 +53,11 @@ EXCLUDE_FILES = {"README.md", ".cursorrules"}
 # 而漏掉後段的 entities / personal_facts（The Weaving must see the whole cloth）。
 ENRICH_SEGMENT_CHARS = 3000
 
+# 預設 Oracle 模型：優先 DeepSeek（雲端 reasoning，穩定），本地 gemma 作保底。
+# 雲端端點抽風或某段被審查/重置時，自動退回本地，既保完整覆蓋也讓敏感內容留在本地。
+DEFAULT_ENRICH_MODEL    = "deepseek:deepseek-v4-pro"
+DEFAULT_FALLBACK_MODELS = ["gemma4:26b"]
+
 # 每次 LLM 呼叫後的結果格式
 EMPTY_ENRICHMENT = {
     "entities": {
@@ -766,7 +771,8 @@ def enrich_all(model: str, rebuild: bool, dry_run: bool, target_file: str | None
 
 def main():
     ap = argparse.ArgumentParser(description="Memosyne Enrichment Layer")
-    ap.add_argument("--model",          default="gemma4:26b", help="Ollama 模型名稱")
+    ap.add_argument("--model",          default=DEFAULT_ENRICH_MODEL,
+                    help=f"Oracle 模型（預設 {DEFAULT_ENRICH_MODEL}）")
     ap.add_argument("--rebuild",        action="store_true",  help="重新增強所有檔案（含已增強）")
     ap.add_argument("--dry-run",        action="store_true",  help="預覽結果，不實際寫入")
     ap.add_argument("--file",           default=None,         help="只處理單一檔案（相對 BASE 路徑）")
@@ -779,10 +785,16 @@ def main():
                     choices=["low", "medium", "high"],
                     help="只對 importance ≥ 此值 的記憶進行批判（預設 high）")
     ap.add_argument("--fallback-model", action="append", default=None, dest="fallback_models",
-                    help="主模型某段重試耗盡後的降級模型，可重複指定形成鏈（依序嘗試）。"
-                         "例：--model proxy:mimo-v2.5-pro "
-                         "--fallback-model deepseek:deepseek-v4-pro --fallback-model gemma4:26b")
+                    help=f"主模型某段重試耗盡後的降級模型，可重複指定形成鏈（依序嘗試）。"
+                         f"未指定時預設 {DEFAULT_FALLBACK_MODELS}；用 --no-fallback 關閉。")
+    ap.add_argument("--no-fallback", action="store_true", help="關閉 fallback 鏈")
     args = ap.parse_args()
+
+    # 未指定 --fallback-model 時套用預設鏈；--no-fallback 則清空
+    if args.no_fallback:
+        args.fallback_models = None
+    elif args.fallback_models is None:
+        args.fallback_models = list(DEFAULT_FALLBACK_MODELS)
 
     if args.weave_tapestry:
         from tapestry import backfill_from_vault
