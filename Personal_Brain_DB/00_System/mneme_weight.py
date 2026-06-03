@@ -62,7 +62,9 @@ CHRONICLE_SCHEMA = "memosyne.chronicle.access.v1"
 DECAY_D = 0.5
 
 # rerank 時 ACT-R 分數的權重係數
-ACTR_ALPHA = 0.2
+# 可用環境變數 MEMOSYNE_ACTR_ALPHA 覆寫（預設 0.2，維持 v0.5 retrieval 凍結行為）。
+# 調低（如 0.05）→ 語意相關度主導；調 0 → 完全關閉 ACT-R 新鮮度重排。
+ACTR_ALPHA = float(os.environ.get("MEMOSYNE_ACTR_ALPHA", "0.2"))
 
 # ─── Per-Prefix Decay（v0.5）──────────────────────────────────
 #
