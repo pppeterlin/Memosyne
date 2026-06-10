@@ -189,9 +189,15 @@ def _get_proxy_client():
     global _proxy_client
     if _proxy_client is None:
         from openai import OpenAI
+        import httpx
         _proxy_client = OpenAI(
             base_url=os.environ.get("PROXY_BASE_URL", PROXY_BASE_URL_DEFAULT),
             api_key=_load_proxy_key(),
+            timeout=float(os.environ.get("PROXY_TIMEOUT", "90")),
+            max_retries=0,   # 重試交由上層（enrich._call_llm_resilient）統一處理
+            # 關閉 keep-alive：每次都開新連線，避開不穩端點留下的 stale socket
+            # （MiMo dedicated 端點會主動斷閒置連線，重用會觸發 APIConnectionError）
+            http_client=httpx.Client(limits=httpx.Limits(max_keepalive_connections=0)),
         )
     return _proxy_client
 

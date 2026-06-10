@@ -856,7 +856,9 @@ def main():
     parser.add_argument("--no-enrich", action="store_true", help="跳過 The Weaving（Enrichment）")
     parser.add_argument("--no-index",  action="store_true", help="跳過 The Inscription（向量索引）")
     parser.add_argument("--rebuild",   action="store_true", help="完整重建索引（非增量）")
-    parser.add_argument("--model",     default="gemma4:26b", help="Oracle 使用的 LLM 模型")
+    parser.add_argument("--model",     default="deepseek:deepseek-v4-pro",
+                        help="Oracle 使用的 LLM 模型（預設 deepseek:deepseek-v4-pro，"
+                             "enrich 會自動以本地 gemma4:26b 保底）")
     parser.add_argument("--backfill",       action="store_true",
                         help="補寫所有既有記憶的 filename_hint，然後重建索引")
     parser.add_argument("--weave-tapestry", action="store_true",

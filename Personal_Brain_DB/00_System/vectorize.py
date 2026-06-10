@@ -69,16 +69,16 @@ configure_hf_runtime()
 
 def get_collection(reset: bool = False):
     import chromadb
-    from chromadb.utils import embedding_functions
+    from embed_backend import make_embedding_function, resolve_config
     client = chromadb.PersistentClient(path=str(CHROMA_DIR))
     if reset:
         try:
             client.delete_collection(COLLECTION)
         except Exception:
             pass
-    ef = embedding_functions.SentenceTransformerEmbeddingFunction(
-        model_name=EMBED_MODEL
-    )
+    # v0.8: embedding 後端可插拔（local / remote GPU / cloud），由 env 切換。
+    # 未設 MEMOSYNE_EMBED_PROVIDER → 維持 v0.7 的本地 sentence-transformers。
+    ef = make_embedding_function(resolve_config())
     return client, client.get_or_create_collection(
         name=COLLECTION,
         embedding_function=ef,
@@ -702,9 +702,14 @@ def _consume_dirty_paths() -> list[str]:
 
 
 def build_index(rebuild: bool = False):
+    from embed_backend import resolve_config
+    _cfg = resolve_config()
     print(f"[VECTOR] ChromaDB 路徑：{CHROMA_DIR}")
-    print(f"[VECTOR] Embedding 模型：{EMBED_MODEL}")
-    print(f"[VECTOR] 首次執行會下載模型（~420MB），請稍候...\n")
+    print(f"[VECTOR] Embedding 後端：{_cfg.describe()}")
+    if _cfg.provider == "local":
+        print(f"[VECTOR] 首次執行會下載模型（~420MB），請稍候...\n")
+    else:
+        print(f"[VECTOR] 算力外包至遠端，Mac 端只做切段與寫入。\n")
 
     client, col = get_collection(reset=rebuild)
     if rebuild:

@@ -23,6 +23,7 @@ import json
 import os
 import re
 import sys
+import time
 import logging
 import warnings
 from datetime import datetime
@@ -46,6 +47,16 @@ SYSTEM_DIR = Path(__file__).parent
 
 EXCLUDE_DIRS  = {"00_System"}
 EXCLUDE_FILES = {"README.md", ".cursorrules"}
+
+# 單次 LLM enrichment 餵入的最大字元數。超過此長度的長檔（如一次性匯入的
+# 大型個人 profile）會被切成多段、各自 enrich，再合併結果——避免只看開頭
+# 而漏掉後段的 entities / personal_facts（The Weaving must see the whole cloth）。
+ENRICH_SEGMENT_CHARS = 3000
+
+# 預設 Oracle 模型：優先 DeepSeek（雲端 reasoning，穩定），本地 gemma 作保底。
+# 雲端端點抽風或某段被審查/重置時，自動退回本地，既保完整覆蓋也讓敏感內容留在本地。
+DEFAULT_ENRICH_MODEL    = "deepseek:deepseek-v4-pro"
+DEFAULT_FALLBACK_MODELS = ["gemma4:26b"]
 
 # 每次 LLM 呼叫後的結果格式
 EMPTY_ENRICHMENT = {
@@ -206,24 +217,82 @@ Memory fragment:
 """
 
 
-def call_llm(title: str, content: str, model: str, filename_hint: list = None,
-             is_ai_chat: bool = False) -> dict:
-    """呼叫 LLM（Ollama / OpenRouter），回傳 enrichment dict。"""
+def _split_for_enrich(content: str, seg_size: int = ENRICH_SEGMENT_CHARS) -> list[str]:
+    """把長文切成 ≤seg_size 的段落，優先在標題 / 空行邊界切，避免切斷句子。
+
+    短於 seg_size 時回傳單元素 list（行為與舊版一致）。
+    """
+    if len(content) <= seg_size:
+        return [content]
+
+    # 以「標題行」與「空行分隔的段落」為自然邊界
+    blocks = re.split(r'(?=^#{1,6}\s)|\n{2,}', content, flags=re.M)
+    segments: list[str] = []
+    buf = ""
+    for block in blocks:
+        if not block:
+            continue
+        # 單一 block 本身就超長 → 硬切
+        if len(block) > seg_size:
+            if buf:
+                segments.append(buf)
+                buf = ""
+            for i in range(0, len(block), seg_size):
+                segments.append(block[i:i + seg_size])
+            continue
+        if len(buf) + len(block) + 2 > seg_size:
+            segments.append(buf)
+            buf = block
+        else:
+            buf = f"{buf}\n\n{block}" if buf else block
+    if buf:
+        segments.append(buf)
+    return segments
+
+
+def _merge_enrichments(parts: list[dict]) -> dict:
+    """合併多段 enrichment：entities/themes/personal_facts 取聯集去重（保序），
+    period/chat_category 取第一個非空，importance 取最高。"""
+    importance_rank = {"low": 0, "medium": 1, "high": 2}
+
+    def _union(seqs: list[list]) -> list:
+        seen, out = set(), []
+        for seq in seqs:
+            for item in (seq or []):
+                if item not in seen:
+                    seen.add(item)
+                    out.append(item)
+        return out
+
+    merged = {
+        "entities": {
+            "locations": _union([p.get("entities", {}).get("locations", []) for p in parts]),
+            "people":    _union([p.get("entities", {}).get("people", [])    for p in parts]),
+            "events":    _union([p.get("entities", {}).get("events", [])    for p in parts]),
+            "emotions":  _union([p.get("entities", {}).get("emotions", [])  for p in parts]),
+        },
+        # 整篇主題上限放寬到 6（單段 prompt 仍限 4）
+        "themes":         _union([p.get("themes", []) for p in parts])[:6],
+        "period":         next((p.get("period") for p in parts if p.get("period")), ""),
+        "importance":     max((p.get("importance", "medium") for p in parts),
+                              key=lambda v: importance_rank.get(v, 1)),
+        # 大檔通常承載大量個人事實，上限放寬到 20
+        "personal_facts": _union([p.get("personal_facts", []) for p in parts])[:20],
+        "chat_category":  next((p.get("chat_category") for p in parts if p.get("chat_category")), ""),
+    }
+    return merged
+
+
+def _call_llm_once(title: str, content: str, model: str, hint_str: str,
+                   is_ai_chat: bool) -> dict:
+    """對單一段落呼叫 LLM，回傳 enrichment dict。"""
     from llm_client import chat_text
-
-    # 截斷過長內容（避免超出 context window）
-    content_trimmed = content[:3000]
-    if len(content) > 3000:
-        content_trimmed += "\n...[截斷]"
-
-    # 格式化 filename_hint
-    hint_str = "、".join(filename_hint) if filename_hint else "（無）"
 
     prompt = ENRICHMENT_PROMPT.format(
         title=title,
         filename_hint=hint_str,
         is_ai_chat=str(is_ai_chat),
-        content=content_trimmed,
+        content=content,
     )
 
     raw = chat_text(
@@ -251,6 +320,73 @@ def call_llm(title: str, content: str, model: str, filename_hint: list = None,
             return json.loads(cleaned)
         except json.JSONDecodeError:
             raise ValueError(f"JSON 解析失敗（{e}）\n原始：{json_str[:400]}")
+
+
+def _try_model_with_retry(title: str, content: str, model: str, hint_str: str,
+                          is_ai_chat: bool, attempts: int) -> dict:
+    """單一模型 + 退避重試。耗盡則 raise。"""
+    last_err = None
+    for n in range(attempts):
+        try:
+            return _call_llm_once(title, content, model, hint_str, is_ai_chat)
+        except Exception as e:
+            last_err = e
+            if n < attempts - 1:
+                wait = min(2 ** (n + 1), 30)   # 2,4,8,16,30,30... 秒，封頂 30s
+                print(f"\n    [retry {n + 1}/{attempts - 1}] {type(e).__name__}，{wait}s 後重試 ... ",
+                      end="", flush=True)
+                time.sleep(wait)
+    raise last_err
+
+
+def _call_llm_resilient(title: str, content: str, model: str, hint_str: str,
+                        is_ai_chat: bool, attempts: int = 8,
+                        fallback_models: list[str] | None = None) -> dict:
+    """Defying Nemesis — 退避重試 + 模型 fallback 鏈。
+
+    先用主模型重試 attempts 次；耗盡後依序試 fallback_models（每個 3 次重試）。
+    用途：主雲端端點抽風（或某段被審查/重置）時，自動降級到下一個 provider，
+    鏈尾通常放本地 ollama 作最終保底——既保完整覆蓋，敏感內容也能留在本地。"""
+    try:
+        return _try_model_with_retry(title, content, model, hint_str, is_ai_chat, attempts)
+    except Exception as primary_err:
+        if not fallback_models:
+            raise
+        for fb in fallback_models:
+            print(f"\n    [fallback] {model} 連續失敗，改用 {fb} 跑這段 ... ",
+                  end="", flush=True)
+            try:
+                return _try_model_with_retry(title, content, fb, hint_str, is_ai_chat, attempts=3)
+            except Exception:
+                continue
+        raise primary_err
+
+
+def call_llm(title: str, content: str, model: str, filename_hint: list = None,
+             is_ai_chat: bool = False, fallback_models: list[str] | None = None) -> dict:
+    """呼叫 LLM（Ollama / OpenRouter），回傳 enrichment dict。
+
+    長檔自動分段 enrich 後合併（見 _split_for_enrich / _merge_enrichments），
+    確保整篇都被 Oracle 讀過，而非只看前 ENRICH_SEGMENT_CHARS 字。
+    每段呼叫帶退避重試；耗盡後依 fallback_models 鏈依序降級。
+    """
+    hint_str = "、".join(filename_hint) if filename_hint else "（無）"
+
+    segments = _split_for_enrich(content)
+    if len(segments) == 1:
+        return _call_llm_resilient(title, segments[0], model, hint_str, is_ai_chat,
+                                   fallback_models=fallback_models)
+
+    print(f"\n    [分段 enrich] 全文 {len(content)} 字 → {len(segments)} 段 ... ",
+          end="", flush=True)
+    parts: list[dict] = []
+    for idx, seg in enumerate(segments, 1):
+        if idx > 1:
+            time.sleep(1)   # 段間小停頓，避免被雲端端點當成 burst 而斷線
+        parts.append(_call_llm_resilient(title, seg, model, hint_str, is_ai_chat,
+                                         fallback_models=fallback_models))
+        print(f"{idx}✓ ", end="", flush=True)
+    return _merge_enrichments(parts)
 
 
 
@@ -413,6 +549,13 @@ def critique_enrichment(enrichment: dict, original_text: str, model: str) -> dic
     if not facts and not themes and not period:
         return enrichment
 
+    # 長檔的 enrichment 來自多段合併，但 critique 只能看 text[:3000]；
+    # 若在此驗證，後段抽出的 facts 會因「不在前 3000 字」被誤判 unsupported 而刪除。
+    # 故長檔跳過 critique（分段 critique 屬另一範疇）。
+    if len(original_text) > ENRICH_SEGMENT_CHARS:
+        print("  [Critique] 長檔已分段 enrich，跳過 critique（避免誤刪後段 facts）")
+        return enrichment
+
     claims = {
         "personal_facts": facts,
         "themes":         themes,
@@ -505,7 +648,8 @@ def already_enriched(content: str) -> bool:
 
 def enrich_all(model: str, rebuild: bool, dry_run: bool, target_file: str | None,
                weave_tapestry: bool = True, critique: bool = False,
-               critique_min_importance: str = "high"):
+               critique_min_importance: str = "high",
+               fallback_models: list[str] | None = None):
     files   = collect_files(target_file)
     total   = len(files)
     skipped = 0
@@ -564,7 +708,8 @@ def enrich_all(model: str, rebuild: bool, dry_run: bool, target_file: str | None
             rel = str(path.relative_to(BASE))
             is_chat = rel.startswith("20_AI_Chats/")
             raw_enrichment  = call_llm(title, full_text, model,
-                                       filename_hint=fname_hint, is_ai_chat=is_chat)
+                                       filename_hint=fname_hint, is_ai_chat=is_chat,
+                                       fallback_models=fallback_models)
             enrichment      = validate_entities(raw_enrichment, full_text)
             enrichment      = resolve_person_aliases(enrichment)
 
@@ -626,7 +771,8 @@ def enrich_all(model: str, rebuild: bool, dry_run: bool, target_file: str | None
 
 def main():
     ap = argparse.ArgumentParser(description="Memosyne Enrichment Layer")
-    ap.add_argument("--model",          default="gemma4:26b", help="Ollama 模型名稱")
+    ap.add_argument("--model",          default=DEFAULT_ENRICH_MODEL,
+                    help=f"Oracle 模型（預設 {DEFAULT_ENRICH_MODEL}）")
     ap.add_argument("--rebuild",        action="store_true",  help="重新增強所有檔案（含已增強）")
     ap.add_argument("--dry-run",        action="store_true",  help="預覽結果，不實際寫入")
     ap.add_argument("--file",           default=None,         help="只處理單一檔案（相對 BASE 路徑）")
@@ -638,7 +784,17 @@ def main():
     ap.add_argument("--critique-min-importance", default="high",
                     choices=["low", "medium", "high"],
                     help="只對 importance ≥ 此值 的記憶進行批判（預設 high）")
+    ap.add_argument("--fallback-model", action="append", default=None, dest="fallback_models",
+                    help=f"主模型某段重試耗盡後的降級模型，可重複指定形成鏈（依序嘗試）。"
+                         f"未指定時預設 {DEFAULT_FALLBACK_MODELS}；用 --no-fallback 關閉。")
+    ap.add_argument("--no-fallback", action="store_true", help="關閉 fallback 鏈")
     args = ap.parse_args()
+
+    # 未指定 --fallback-model 時套用預設鏈；--no-fallback 則清空
+    if args.no_fallback:
+        args.fallback_models = None
+    elif args.fallback_models is None:
+        args.fallback_models = list(DEFAULT_FALLBACK_MODELS)
 
     if args.weave_tapestry:
         from tapestry import backfill_from_vault
@@ -654,6 +810,7 @@ def main():
         weave_tapestry           = not args.no_tapestry,
         critique                 = args.critique,
         critique_min_importance  = args.critique_min_importance,
+        fallback_models          = args.fallback_models,
     )
 
 
