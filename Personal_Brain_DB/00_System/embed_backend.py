@@ -126,6 +126,31 @@ def _post_json(url: str, payload: dict, headers: dict, timeout: float) -> dict:
         return json.loads(r.read().decode("utf-8"))
 
 
+def ping_endpoint(config: EmbedConfig, timeout: float = 3.0) -> tuple[bool, str]:
+    """
+    輕量 reachability 檢查（不做 embedding、不重試）—— 供 providers list / health 用。
+
+    只確認 remote endpoint 活著，不耗 GPU：
+      - ollama        → GET {url}/api/tags
+      - openai-compat → GET {url}/v1/models
+
+    回傳 (reachable, detail)。local provider 永遠 (True, describe)。
+    """
+    if not config.is_remote:
+        return True, config.describe()
+    path = "/api/tags" if config.provider == "ollama" else "/v1/models"
+    url = f"{config.url}{path}"
+    req = urllib.request.Request(url, method="GET")
+    if config.api_key:
+        req.add_header("Authorization", f"Bearer {config.api_key}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            ok = 200 <= r.status < 300
+            return ok, f"{config.url} (HTTP {r.status})"
+    except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
+        return False, f"{config.url} — {type(e).__name__}: {e}"
+
+
 # ─── Remote embedding function (ChromaDB EmbeddingFunction 介面) ───
 
 class RemoteEmbeddingFunction:
