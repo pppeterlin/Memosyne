@@ -160,6 +160,7 @@ python3 Personal_Brain_DB/00_System/chat.py       # RAG 對話
 | `chat.py` | RAG 對話（可設定本地或雲端後端） | — |
 | `augury.py` | 記憶品質審計與修正 | `--inspect`, `--correct`, `--patrol` |
 | `mneme_weight.py` | ACT-R 存取紀錄與認知衰減 | `--stats`, `--top`, `--score` |
+| `muse_call.py` | 主動式記憶缺口提問（The Call of the Muses） | `--list`, `--json`, `--answer`, `--stats` |
 | `slumber.py` | 記憶鞏固（The Rite of Slumber） | `--reflect`, `--hebbian`, `--forget`, `--stats` |
 | `watch.py` | 檔案系統監控守夜 | — |
 
@@ -212,6 +213,8 @@ memosyne health
 - `read_file(path)` — 讀取任意記憶檔案
 - `optimize_memory(action)` — 觸發記憶鞏固（reflect/hebbian/forget/all）
 - `get_memory_health()` — Chronicle 健康報告
+- `muse_call(count, lang)` — The Call of the Muses：取得今日缺口提問
+- `muse_answer(question_id, answer)` — 回填使用者原話到 `spring/`
 
 ---
 
@@ -267,6 +270,31 @@ python3 Personal_Brain_DB/00_System/slumber.py          # 完整鞏固
 python3 Personal_Brain_DB/00_System/slumber.py --reflect
 python3 Personal_Brain_DB/00_System/slumber.py --forget --dry-run
 ```
+
+### The Call of the Muses — 主動式記憶缺口提問 *(v1.0)*
+
+一般記憶系統是被動的——只知道你恰好寫下的東西。The Call 反過來：
+Memosyne 掃描 Vault 找出它「還不知道」的事，每天主動問你幾個問題。
+回答走標準入庫管線（ingest → enrich → vectorize），成為一等記憶。
+
+| 缺口來源 | 範例問題 |
+|----------|----------|
+| 領域全空 | 「聖典幾乎是空白的——告訴我你是誰。」 |
+| Profile 主題缺漏（家庭、價值觀、喜好、目標…共 14 題） | 「你最愛吃什麼？又絕對不碰什麼？」 |
+| 被提及但近乎未知的人物（Tapestry 單薄節點） | 「你提過 Alex——這是誰？」 |
+| 日記空白月份 | 「2026-03 的日記一片寂靜——那段時間你過得如何？」 |
+| 領域停滯 30 天以上 | 「專案領域好一陣子沒有新消息了——最近在做什麼？」 |
+
+```bash
+memosyne call                 # 互動式每日儀式（3 題）
+memosyne call --lang zh       # 繁體中文提問
+memosyne call --list --json   # 機器可讀（給 agent / cron）
+memosyne call --stats         # 提問 / 回答統計與缺口總覽
+```
+
+缺口分析完全 deterministic（不需 LLM、不需索引）；答過的問題進入
+120 天冷卻（私有 ledger）。Agent 可透過 MCP（`muse_call` /
+`muse_answer`）代繆思訪談。詳見 [docs/call_of_muses.md](docs/call_of_muses.md)。
 
 ---
 
