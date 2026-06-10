@@ -64,6 +64,7 @@ FLASHRANK_CACHE = Path(__file__).parent / "flashrank_cache"
 LOCAL_MODEL      = "gemma4:26b"
 CLOUD_MODEL      = "gemini-2.0-flash-lite"   # 免費額度最高的 Gemini 模型
 PROXY_MODEL      = "proxy:claude-opus-4-6"   # 反代理（aiclient-2-api → Claude Opus）
+DEEPSEEK_MODEL   = "deepseek:deepseek-v4-pro" # DeepSeek 官方雲端（.env 的 LLM_API_KEY）
 
 FETCH_K          = 10
 KEEP_K           = 4
@@ -373,6 +374,8 @@ def make_reply_label(backend: str, model: str) -> str:
         # "proxy:claude-opus-4-6" → "Claude"
         tail = model.split(":", 1)[1] if ":" in model else model
         return tail.split("-")[0].capitalize()
+    elif backend == "deepseek":
+        return "DeepSeek"
     else:
         # cloud：取第一段（"gemini-2.0-flash-lite" → "Gemini"）
         return model.split("-")[0].capitalize()
@@ -555,15 +558,18 @@ def pick_backend(forced: str) -> tuple[str, str, object | None]:
         choice = "2"
     elif forced == "proxy":
         choice = "3"
+    elif forced == "deepseek":
+        choice = "4"
     else:
         print("┌─────────────────────────────────────────┐")
         print("│  選擇 LLM 後端                           │")
         print("│  [1] 本地 Ollama（gemma4:26b）           │")
         print("│  [2] 雲端 Gemini（gemini-2.0-flash-lite）│")
         print("│  [3] 反代理 Proxy（claude-opus-4-6）     │")
+        print("│  [4] 雲端 DeepSeek（deepseek-v4-pro）    │")
         print("└─────────────────────────────────────────┘")
         try:
-            choice = input("選擇 [1/2/3]（預設 1）: ").strip() or "1"
+            choice = input("選擇 [1/2/3/4]（預設 1）: ").strip() or "1"
         except (EOFError, KeyboardInterrupt):
             sys.exit(0)
 
@@ -572,6 +578,8 @@ def pick_backend(forced: str) -> tuple[str, str, object | None]:
         return "cloud", CLOUD_MODEL, client
     elif choice == "3":
         return "proxy", PROXY_MODEL, None
+    elif choice == "4":
+        return "deepseek", DEEPSEEK_MODEL, None
     else:
         return "local", LOCAL_MODEL, None
 
@@ -580,7 +588,7 @@ def pick_backend(forced: str) -> tuple[str, str, object | None]:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--backend",    type=str, default="",      help="local / cloud / proxy（省略則互動選擇）")
+    parser.add_argument("--backend",    type=str, default="",      help="local / cloud / proxy / deepseek（省略則互動選擇）")
     parser.add_argument("--model",      type=str, default="",      help="覆寫模型名稱")
     parser.add_argument("--fetch",      type=int, default=FETCH_K, help=f"向量搜尋初撈筆數（預設 {FETCH_K}）")
     parser.add_argument("--keep",       type=int, default=KEEP_K,  help=f"rerank 後保留筆數（預設 {KEEP_K}）")
@@ -615,6 +623,8 @@ def main():
         backend_label = f"Ollama / {model}"
     elif backend == "proxy":
         backend_label = f"Proxy / {model}"
+    elif backend == "deepseek":
+        backend_label = f"DeepSeek / {model}"
     else:
         backend_label = f"Gemini / {model}"
     print(f"=== Personal Brain RAG Chat ===")

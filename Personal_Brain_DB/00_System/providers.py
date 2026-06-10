@@ -1,20 +1,29 @@
 #!/usr/bin/env python3
 """
-Memosyne — provider inspector + tester (v0.7)
+Memosyne — provider inspector + tester (v0.7; embedding section added v0.8)
 
 `memosyne providers list` and `memosyne providers test <name>` give a
-single-screen view of which LLM backends are configured and which
-actually work right now. Borrowed in spirit from gbrain's
-`providers list` but scoped to Memosyne's four backends:
+single-screen view of which backends are configured and which actually
+work right now.
+
+LLM backends (pick ONE, set LLM_PROVIDER):
 
     ollama       local        Ollama HTTP API
     openrouter   cloud        OpenRouter routing
     deepseek     cloud        DeepSeek official API
     proxy        local/relay  OpenAI-compatible reverse proxy
 
-The goal is: a new user picks ONE provider, gets it green here, and
-the rest of Memosyne just works. Today they have to read llm_client.py
-to figure out env vars + default models.
+Embedding backends (v0.8, pick ONE, set MEMOSYNE_EMBED_PROVIDER):
+
+    local-st       local      local sentence-transformers (default)
+    ollama         remote     self-hosted GPU server (POST /api/embed)
+    openai-compat  remote     OpenAI-style /v1/embeddings endpoint
+
+`memosyne providers test embed` runs a hello-world embed against the
+active embedding backend and reports dim + latency.
+
+The goal is: a new user picks ONE provider per axis, gets it green
+here, and the rest of Memosyne just works.
 """
 
 from __future__ import annotations
@@ -151,6 +160,82 @@ _STATUS_FN = {
 }
 
 
+# ── Embedding backend status (v0.8 WS2) ─────────────────────
+# Embedding 不同於 LLM：只有「一個 active 後端」由 MEMOSYNE_EMBED_PROVIDER 決定。
+# list 只做輕量 reachability ping（不耗 GPU）；真正的 hello-world embed 在 test embed。
+
+def _embedding_rows() -> list[tuple[str, str, str, str]]:
+    """回傳 (name, loc, status, detail) for local-st / ollama / openai-compat。"""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import embed_backend as eb
+    except ImportError as e:
+        return [("embed_backend", "-", "unreachable", f"import failed: {e}")]
+
+    cfg = None
+    cfg_err = ""
+    try:
+        cfg = eb.resolve_config()
+        active = cfg.provider
+    except eb.EmbeddingBackendError as e:
+        active = (os.environ.get("MEMOSYNE_EMBED_PROVIDER") or "local").strip().lower()
+        cfg_err = str(e)
+
+    rows: list[tuple[str, str, str, str]] = []
+    local_detail = eb.LOCAL_DEFAULT_MODEL + (" (active)" if active == "local" else "")
+    rows.append(("local-st", "local", "ok", local_detail))
+
+    for prov in ("ollama", "openai-compat"):
+        if active != prov:
+            rows.append((prov, "remote", "no-key", "inactive (set MEMOSYNE_EMBED_PROVIDER)"))
+        elif cfg is None:
+            rows.append((prov, "remote", "unreachable", cfg_err))
+        else:
+            ok, detail = eb.ping_endpoint(cfg, timeout=2.0)
+            status = "ok" if ok else "unreachable"
+            rows.append((prov, "remote", status, f"{cfg.model} @ {detail} (active)"))
+    return rows
+
+
+def cmd_test_embed() -> int:
+    """跑一次 hello-world embed call，回報 dim + latency（WS2）。"""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import embed_backend as eb
+    except ImportError as e:
+        print(f"[embed] embed_backend unavailable: {e}", file=sys.stderr)
+        return 1
+
+    try:
+        cfg = eb.resolve_config()
+    except eb.EmbeddingBackendError as e:
+        print(f"[embed] config error: {e}", file=sys.stderr)
+        return 1
+
+    print(f"[embed] backend: {cfg.describe()}")
+    t0 = time.time()
+    try:
+        if cfg.provider == "local":
+            ef = eb.make_embedding_function(cfg)
+            vec = ef(["hello"])[0]
+            dim, latency_ms = len(vec), int((time.time() - t0) * 1000)
+        else:
+            dim, latency_ms = eb.RemoteEmbeddingFunction(cfg).probe()
+    except eb.EmbeddingBackendError as e:
+        print(f"        ✗ {e}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"        ✗ embed call failed: {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
+
+    print(f"        ✓ dim={dim} latency={latency_ms}ms")
+    if cfg.dim is not None and dim != cfg.dim:
+        print(f"        ! MEMOSYNE_EMBED_DIM={cfg.dim} 但實得 dim={dim} — 跑 `memosyne embed migrate`",
+              file=sys.stderr)
+        return 1
+    return 0
+
+
 # ── Commands ────────────────────────────────────────────────
 
 def _color(status: str) -> str:
@@ -163,19 +248,27 @@ def _color(status: str) -> str:
 
 
 def cmd_list() -> int:
-    print(f"{'provider':12} {'kind':12} {'status':5} {'detail'}")
-    print("-" * 78)
+    print("── LLM providers " + "─" * 45)
+    print(f"{'provider':13} {'kind':12} {'status':5} {'detail'}")
     for p in PROVIDERS:
         status, detail = _STATUS_FN[p.name]()
-        print(f"{p.name:12} {p.kind:12} {_color(status):>5} {detail}")
+        print(f"{p.name:13} {p.kind:12} {_color(status):>5} {detail}")
     print()
-    print("Set the active backend with LLM_PROVIDER=<name> in .env,")
-    print("or per-call via 'memosyne <cmd> --model <name>:<model>'.")
+    print("── Embedding providers " + "─" * 39)
+    print(f"{'provider':13} {'loc':12} {'status':5} {'detail'}")
+    for name, loc, status, detail in _embedding_rows():
+        print(f"{name:13} {loc:12} {_color(status):>5} {detail}")
+    print()
+    print("LLM:   set LLM_PROVIDER=<name> in .env, or per-call --model <name>:<model>.")
+    print("Embed: set MEMOSYNE_EMBED_PROVIDER=<local|ollama|openai-compat> in .env.")
+    print("       test the active embedding backend: memosyne providers test embed")
     return 0
 
 
 def cmd_test(name: str, model: str | None = None) -> int:
     """Run a single hello-world LLM call against the named provider."""
+    if name == "embed":
+        return cmd_test_embed()
     if name not in _STATUS_FN:
         print(f"unknown provider: {name}", file=sys.stderr)
         print(f"available: {', '.join(p.name for p in PROVIDERS)}", file=sys.stderr)
@@ -226,7 +319,7 @@ def _main() -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list", help="show every provider with status")
     ap_t = sub.add_parser("test", help="run a hello-world call against a provider")
-    ap_t.add_argument("name", help="provider name (ollama / openrouter / deepseek / proxy)")
+    ap_t.add_argument("name", help="provider name (ollama / openrouter / deepseek / proxy / embed)")
     ap_t.add_argument("--model", default="", help="override model name (default = provider's default)")
     args = ap.parse_args()
 
