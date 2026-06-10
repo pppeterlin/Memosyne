@@ -30,7 +30,7 @@ Memosyne 是一個本地優先的個人記憶基礎設施層，供 AI Agent 透�
 | v0.5 | 規模化與自我評估 | deterministic 抽取、Augury Replay、graph walk 多策略、MCP HTTP、skills、CI invariants | 公開 |
 | v0.6 | 累積型來源 | turn-level 去重，正確處理 Gemini 續寫等增量匯入 | 公開 |
 | v0.7 | 易用性與開源體驗 | quickstart、CLI 一致性、錯誤訊息升級、文檔重組、多 provider 一鍵切換、release 工具 | 公開 |
-| v0.8 | 分散式運算（Distant Forge）| LLM 全雲端、embedding 走遠端 GPU；providers/health 涵蓋 remote endpoint；v0.6 partial enrichment 收尾 | 開發中 |
+| v0.8 | 分散式運算 | LLM 全雲端、embedding 走遠端 GPU；providers/health 涵蓋 remote endpoint；v0.6 partial enrichment 收尾 | 開發中 |
 
 ## v0.2：檢索凍結
 
@@ -120,7 +120,7 @@ python Personal_Brain_DB/00_System/slumber.py --stats
 
 ## 目前建議優先順序
 
-v0.8 開發中（The Distant Forge）— LLM 全雲端 + embedding 走遠端 GPU。
+v0.8 開發中（分散式運算）— LLM 全雲端 + embedding 走遠端 GPU。
 完整計畫見 [docs/v0.8_distant_forge.md](docs/v0.8_distant_forge.md)。
 順便收 v0.6 留下的 Phase 3 partial enrichment。
 
