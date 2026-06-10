@@ -474,6 +474,60 @@ def aletheia_revert(log_id: str, apply: bool = False) -> str:
         return f"Aletheia faltered: {e}"
 
 
+# ──────────────────────────────────────────────────────────
+#  The Call of the Muses — 主動式記憶缺口提問 (v1.0)
+# ──────────────────────────────────────────────────────────
+
+@mcp.tool()
+def muse_call(count: int = 3, lang: str = "en") -> str:
+    """
+    The Call of the Muses — 取得今日的主動提問（記憶缺口分析）。
+
+    繆思掃描 Vault 找出缺口（空白領域、Profile 主題缺漏、單薄人物、
+    日記空白月份、停滯領域），回傳今日問題清單（JSON）。Agent 可在
+    對話中自然地代繆思發問，收到回答後呼叫 muse_answer 回填。
+
+    Args:
+        count: 問題數（預設 3）
+        lang:  問題語言 "en" 或 "zh"
+    """
+    try:
+        import json as _json
+        from muse_call import select_questions, record
+        questions = select_questions(count=count, lang=lang)
+        if not questions:
+            return "The Muses are content. No questions today."
+        for q in questions:
+            record(q["qid"], q["kind"], q["question"], "asked")
+        return _json.dumps(
+            [{k: q[k] for k in ("qid", "kind", "muse", "question", "context")}
+             for q in questions],
+            ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"The Call faltered: {e}"
+
+
+@mcp.tool()
+def muse_answer(question_id: str, answer: str) -> str:
+    """
+    The Call of the Muses — 回填使用者對某個提問的回答。
+
+    回答寫入 spring/，由標準 Spring Ritual（ingest → enrich →
+    vectorize）織入 Vault。請保留使用者原話，不要改寫或補充。
+
+    Args:
+        question_id: muse_call 回傳的 qid
+        answer:      使用者的回答原文
+    """
+    try:
+        from muse_call import submit_answer
+        path = submit_answer(question_id, answer)
+        return (f"🌊 The answer has found its place: {path}\n"
+                f"Run `memosyne ingest` to weave it into the Vault.")
+    except Exception as e:
+        return f"The Call faltered: {e}"
+
+
 # ═══════════════════════════════════════════════════════════
 #  The Invocation Protocol — meta-tool for routing (Phase 7)
 # ═══════════════════════════════════════════════════════════
@@ -509,6 +563,16 @@ _INVOCATION_RULES: list[dict] = [
         "tool": "（無 MCP 直接介面）",
         "example": "請使用者丟檔案到 spring/ 並跑 python3 00_System/ingest.py",
         "notes": "入庫需要 Oracle enrichment + chunking + 向量化，不是單一 call。",
+    },
+    {
+        "cls": "WRITE-GAPFILL",
+        "patterns": [
+            "問我", "interview me", "daily question", "ask me something",
+            "今天的問題", "記憶缺口", "the muses",
+        ],
+        "tool": "muse_call → muse_answer",
+        "example": 'muse_call(count=3, lang="zh") → 逐題發問 → muse_answer(qid, answer)',
+        "notes": "回答保留使用者原話；回填後提醒使用者跑 memosyne ingest。",
     },
     {
         "cls": "READ-RECALL",
@@ -600,8 +664,11 @@ TOOL_SCOPES: dict[str, dict] = {
     "query_memory_at_time":    {"scope": "read"},
     "get_memory_health":       {"scope": "read"},
     "invocation_protocol":     {"scope": "read"},
+    # read + telemetry append（比照 search_memory 寫 Chronicle 的先例）
+    "muse_call":               {"scope": "read"},
     # write
     "optimize_memory":         {"scope": "write"},
+    "muse_answer":             {"scope": "write"},
     "aletheia_add_fact":       {"scope": "write"},
     "aletheia_update_fact":    {"scope": "write"},
     "aletheia_invalidate_fact":{"scope": "write"},
