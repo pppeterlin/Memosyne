@@ -102,6 +102,47 @@ def _ollama_available() -> tuple[bool | None, str]:
         return None, url
 
 
+def _embedding_backend_check() -> HealthCheck:
+    """
+    v0.8 WS3 — health 涵蓋 remote embedding endpoint。
+
+    - provider=local            → ok（資訊性，與 v0.7 行為一致）
+    - provider=remote 且可達     → ok（顯示 endpoint）
+    - provider=remote 連不到     → fail + 三條 next-step（不靜默降級回本地）
+    - config 無效（remote 缺 URL）→ fail
+    """
+    sys.path.insert(0, str(SYSTEM_DIR))
+    try:
+        import embed_backend as eb
+    except ImportError as exc:
+        return _check(None, "embedding backend", f"embed_backend import failed: {exc}")
+
+    try:
+        cfg = eb.resolve_config()
+    except eb.EmbeddingBackendError as exc:
+        return _check(
+            False,
+            "embedding backend",
+            str(exc),
+            "Fix MEMOSYNE_EMBED_* in .env, or unset MEMOSYNE_EMBED_PROVIDER to use local.",
+        )
+
+    if not cfg.is_remote:
+        return _check(True, "embedding backend", cfg.describe())
+
+    ok, detail = eb.ping_endpoint(cfg, timeout=3.0)
+    if ok:
+        return _check(True, "embedding backend", f"{cfg.provider} {cfg.model} @ {detail}")
+    return _check(
+        False,
+        "embedding backend",
+        detail,
+        "1. tailscale status            (確認 mesh 健康)\n"
+        "       2. ssh <host> && systemctl status ollama   (確認遠端服務在跑)\n"
+        "       3. or unset MEMOSYNE_EMBED_PROVIDER to use the local fallback",
+    )
+
+
 def _submodule_state() -> tuple[bool | None, str]:
     code, output = _command_output(["git", "submodule", "status", "--", "Personal_Brain_DB/_vault"])
     if code != 0:
@@ -217,6 +258,8 @@ def _collect_health_checks() -> list[HealthCheck]:
         "Start Ollama with `ollama serve &` then `ollama pull <model>`,\n"
         "       OR pick a cloud backend instead: `memosyne providers list`.",
     ))
+
+    checks.append(_embedding_backend_check())
 
     secret_ok, secret_detail = _check_secret_files()
     checks.append(_check(

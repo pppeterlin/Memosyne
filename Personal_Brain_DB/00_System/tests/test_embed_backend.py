@@ -171,5 +171,50 @@ class TestFailFast(unittest.TestCase):
         self.assertIn("不通", str(ctx.exception))
 
 
+class TestPingEndpoint(unittest.TestCase):
+    """ping_endpoint：輕量 reachability，供 providers list / health 用（WS2/WS3）。"""
+
+    def test_local_provider_always_reachable(self):
+        cfg = eb.EmbedConfig(provider="local")
+        ok, _ = eb.ping_endpoint(cfg)
+        self.assertTrue(ok)
+
+    def test_remote_reachable_hits_tags(self):
+        seen = {}
+
+        class FakeResp:
+            status = 200
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        def fake_urlopen(req, timeout=None):
+            seen["url"] = req.full_url
+            return FakeResp()
+
+        orig = eb.urllib.request.urlopen
+        eb.urllib.request.urlopen = fake_urlopen
+        try:
+            cfg = eb.EmbedConfig(provider="ollama", url="http://x:11434", model="m")
+            ok, _ = eb.ping_endpoint(cfg)
+        finally:
+            eb.urllib.request.urlopen = orig
+        self.assertTrue(ok)
+        self.assertTrue(seen["url"].endswith("/api/tags"))
+
+    def test_remote_unreachable_returns_false(self):
+        def fake_urlopen(req, timeout=None):
+            raise urllib.error.URLError("connection refused")
+
+        orig = eb.urllib.request.urlopen
+        eb.urllib.request.urlopen = fake_urlopen
+        try:
+            cfg = eb.EmbedConfig(provider="openai-compat", url="http://dead:8080", model="m")
+            ok, detail = eb.ping_endpoint(cfg)
+        finally:
+            eb.urllib.request.urlopen = orig
+        self.assertFalse(ok)
+        self.assertIn("dead:8080", detail)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
