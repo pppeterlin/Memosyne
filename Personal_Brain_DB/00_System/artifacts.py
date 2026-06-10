@@ -122,6 +122,16 @@ ARTIFACTS: dict[str, Artifact] = {
         legacy_shim=False,
         ephemeral=True,
     ),
+    "muse_call_ledger": Artifact(
+        key="muse_call_ledger",
+        relative_path="muse_call_ledger.jsonl",
+        kind="append-only log",
+        privacy="private",
+        description="The Call of the Muses question ledger — asked/answered/"
+                    "skipped history used for question cooldowns.",
+        legacy_shim=False,
+        ephemeral=True,
+    ),
     "dirty_paths": Artifact(
         key="dirty_paths",
         relative_path="dirty_paths.txt",
