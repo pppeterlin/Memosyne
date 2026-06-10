@@ -30,7 +30,8 @@ Memosyne 是一個本地優先的個人記憶基礎設施層，供 AI Agent 透�
 | v0.5 | 規模化與自我評估 | deterministic 抽取、Augury Replay、graph walk 多策略、MCP HTTP、skills、CI invariants | 公開 |
 | v0.6 | 累積型來源 | turn-level 去重，正確處理 Gemini 續寫等增量匯入 | 公開 |
 | v0.7 | 易用性與開源體驗 | quickstart、CLI 一致性、錯誤訊息升級、文檔重組、多 provider 一鍵切換、release 工具 | 公開 |
-| v0.8 | 分散式運算 | LLM 全雲端、embedding 走遠端 GPU；providers/health 涵蓋 remote endpoint；v0.6 partial enrichment 收尾 | 開發中 |
+| v0.8 | 分散式運算 | LLM 全雲端、embedding 走遠端 GPU；providers/health 涵蓋 remote endpoint（WS4–WS6 延後，見 docs/v0.8_deferred.md） | 已交付 |
+| v1.0 | 主動式記憶累積 | The Call of the Muses：缺口分析 + 每日主動提問；答案走標準入庫管線；MCP agent 訪談介面 | 開發中 |
 
 ## v0.2：檢索凍結
 
@@ -118,13 +119,33 @@ python Personal_Brain_DB/00_System/tapestry.py --stats
 python Personal_Brain_DB/00_System/slumber.py --stats
 ```
 
+## v1.0：主動式記憶累積（The Call of the Muses）
+
+詳細文檔：[docs/call_of_muses.md](docs/call_of_muses.md)
+
+目標：讓 Memosyne 從被動歸檔變成主動累積——系統知道自己缺什麼，並開口問。
+
+關鍵決策：
+
+- 缺口分析必須 deterministic（不依賴 LLM、不依賴向量索引），clean clone 即可用。
+- 五種缺口來源：空白領域、Profile 主題缺漏、單薄人物、日記空白月份、領域停滯。
+- 回答不開新管線：寫入 spring/ 走標準 ingest → enrich → vectorize。
+- 冷卻 ledger 防止重複提問；answered 是終態。
+- Agent 介面走 MCP（muse_call / muse_answer），與 CLI 共用同一套選題邏輯。
+
+出口標準：
+
+- `memosyne call` 互動儀式可用；`--list --json` 可供 cron / agent 消費。
+- 空 vault、無 kuzu、無 LLM 的環境下功能完整降級（不報錯）。
+- 單元測試涵蓋缺口偵測、冷卻、選題決定性、回答落地。
+
 ## 目前建議優先順序
 
-v0.8 開發中（分散式運算）— LLM 全雲端 + embedding 走遠端 GPU。
-完整計畫見 [docs/v0.8_distant_forge.md](docs/v0.8_distant_forge.md)。
-順便收 v0.6 留下的 Phase 3 partial enrichment。
+v1.0 開發中（The Call of the Muses）— 主動式記憶缺口提問。
 
-v0.8 完成之後的候選方向：
+v1.0 之後的候選方向：
+
+1. **WS6 partial enrichment（v0.6 舊債）**：turn-aware 路徑只 enrich 新 turns（見 docs/v0.8_deferred.md）。
 
 1. **Aletheia turn-level correction**：v0.6 後記憶身分到 turn 層，correction 也該下沉。
 2. **OAuth 2.1 for MCP HTTP**：等真實有人從外部連 HTTP 後再做。

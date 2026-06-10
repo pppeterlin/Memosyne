@@ -184,6 +184,32 @@ python3 Personal_Brain_DB/00_System/slumber.py --reflect
 python3 Personal_Brain_DB/00_System/slumber.py --forget --dry-run
 ```
 
+### The Call of the Muses — Proactive Gap Questions *(v1.0)*
+
+Memory systems are usually passive — they only know what you happen to
+write down. The Call inverts this: Memosyne scans the Vault for what it
+*doesn't* know about you and asks a few questions a day. Answers flow
+through the standard ingest pipeline and become first-class memories.
+
+| Gap source | Example question |
+|------------|------------------|
+| Empty domain | "The Codex is nearly empty — tell me who you are." |
+| Missing profile topic (family, values, food, goals...) | "What foods do you love, and what would you never eat?" |
+| Person mentioned but unknown (thin Tapestry node) | "You've mentioned Alex — who are they to you?" |
+| Silent journal month | "Your journal is silent for 2026-03 — what was happening then?" |
+| Stale domain (30+ days) | "No project updates in a while — what are you building?" |
+
+```bash
+memosyne call                 # interactive daily ritual (3 questions)
+memosyne call --list --json   # machine-readable, for agents / cron
+memosyne call --stats         # asked/answered/skipped + open gaps
+```
+
+Gap analysis is fully deterministic (no LLM, no index needed); answered
+questions enter a 120-day cooldown via a private ledger. Agents can run
+the interview over MCP (`muse_call` / `muse_answer`). Details in
+[docs/call_of_muses.md](docs/call_of_muses.md).
+
 ---
 
 ## Quick Start
@@ -265,6 +291,8 @@ Add to your MCP config (`~/.claude/claude_desktop_config.json` or equivalent):
 | `read_file(path)` | Read any memory file (sandboxed) |
 | `optimize_memory(action)` | Trigger memory consolidation (`reflect`/`hebbian`/`forget`/`all`) |
 | `get_memory_health()` | Chronicle access stats and ACT-R report |
+| `muse_call(count, lang)` | The Call of the Muses — fetch today's gap-filling questions |
+| `muse_answer(question_id, answer)` | Record the user's verbatim answer into `spring/` |
 
 ---
 
@@ -281,6 +309,7 @@ Add to your MCP config (`~/.claude/claude_desktop_config.json` or equivalent):
 | `chat.py` | RAG chat (configurable local or cloud backend) | — |
 | `augury.py` | Memory quality audit and correction | `--inspect` `--correct` `--patrol` |
 | `mneme_weight.py` | ACT-R access log and cognitive decay | `--stats` `--top` `--score` |
+| `muse_call.py` | The Call of the Muses — proactive gap questions | `--list` `--json` `--answer` `--stats` |
 | `slumber.py` | Memory consolidation | `--reflect` `--hebbian` `--forget` `--stats` |
 | `watch.py` | Filesystem watcher daemon | — |
 
