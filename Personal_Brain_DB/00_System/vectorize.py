@@ -60,7 +60,9 @@ HYQE_CACHE   = artifact_path("hyqe_cache")
 EMBED_MODEL  = "paraphrase-multilingual-MiniLM-L12-v2"
 COLLECTION   = "personal_brain"
 MIN_PARA_LEN = 25   # 少於此字數的段落略過（通常是標題殘留）
-CTX_MODEL    = "gemma3:4b"  # Contextual notes 用小模型，省 tokens
+# Contextual notes / HyQE 用便宜快模型。預設走雲端 deepseek flash：
+# 本地 Ollama 跑 676 份文件的長 prompt 會讓 Mac 持續滿載（v0.8 的原始動機）。
+CTX_MODEL    = "deepseek:deepseek-v4-flash"
 
 configure_hf_runtime()
 
@@ -767,12 +769,25 @@ def build_index(rebuild: bool = False):
     build_bm25_index(all_chunks)
 
 
+_STATS_PAGE = 5000  # chroma get() 單次上限，避免 SQL 變數過多
+
+
 def _print_stats(col):
     """印出各 type 的文件數統計"""
-    all_meta = col.get(include=["metadatas"])["metadatas"]
+    # 分頁取 metadata：一次 col.get() 抓整個 collection 會讓 chroma 的
+    # SQL 綁定變數爆掉（"too many SQL variables"），vault 一大就必炸。
     from collections import Counter
-    by_type  = Counter(m.get("type", "?")  for m in all_meta if m.get("chunk_type") == "summary")
-    by_chunk = Counter(m.get("chunk_type") for m in all_meta)
+    by_type, by_chunk = Counter(), Counter()
+    total, offset = col.count(), 0
+    while offset < total:
+        batch = col.get(limit=_STATS_PAGE, offset=offset, include=["metadatas"])["metadatas"]
+        if not batch:
+            break
+        for m in batch:
+            by_chunk[m.get("chunk_type")] += 1
+            if m.get("chunk_type") == "summary":
+                by_type[m.get("type", "?")] += 1
+        offset += len(batch)
     print(f"\n  chunk 類型：{dict(by_chunk)}")
     print(f"  文件類型：{dict(by_type)}")
 
