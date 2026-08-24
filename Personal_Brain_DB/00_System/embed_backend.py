@@ -59,7 +59,7 @@ class EmbedConfig:
 
     def describe(self) -> str:
         if self.provider == "local":
-            return f"local sentence-transformers ({self.model})"
+            return f"local sentence-transformers ({self.model} @ {resolve_local_device()})"
         return f"{self.provider} {self.model} @ {self.url}"
 
 
@@ -266,6 +266,33 @@ class RemoteEmbeddingFunction:
 
 # ─── 工廠：給 vectorize.get_collection 用 ─────────────────────
 
+def resolve_local_device() -> str:
+    """
+    決定本地 sentence-transformers 要跑在哪個 torch device。
+
+    chromadb 的 SentenceTransformerEmbeddingFunction 預設寫死 device="cpu"，
+    在 Apple Silicon 上等於白白放棄 MPS。auto 會挑當下最快的可用裝置。
+
+    MEMOSYNE_EMBED_DEVICE=auto|cpu|mps|cuda（預設 auto）
+    """
+    choice = (os.environ.get("MEMOSYNE_EMBED_DEVICE") or "auto").strip().lower()
+    if choice and choice != "auto":
+        return choice
+    try:
+        import torch
+    except ImportError:
+        return "cpu"
+    try:
+        if torch.cuda.is_available():
+            return "cuda"
+        mps = getattr(torch.backends, "mps", None)
+        if mps is not None and mps.is_available():
+            return "mps"
+    except Exception:
+        return "cpu"
+    return "cpu"
+
+
 def make_embedding_function(config: EmbedConfig | None = None):
     """
     回傳一個 chromadb 可用的 embedding function。
@@ -277,6 +304,7 @@ def make_embedding_function(config: EmbedConfig | None = None):
     if cfg.provider == "local":
         from chromadb.utils import embedding_functions
         return embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name=cfg.model
+            model_name=cfg.model,
+            device=resolve_local_device(),
         )
     return RemoteEmbeddingFunction(cfg)
