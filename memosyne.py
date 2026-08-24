@@ -224,6 +224,23 @@ def _collect_health_checks() -> list[HealthCheck]:
         exists = bool(artifact["exists"])
         is_expected = artifact["key"] in expected_keys
         is_ephemeral = bool(artifact.get("ephemeral"))
+        wrong_kind = (exists
+                      and bool(artifact.get("expects_file"))
+                      and bool(artifact.get("is_dir")))
+
+        if wrong_kind:
+            # e.g. contextual_cache.json exists as an empty directory because a
+            # docker-compose bind mount pointed at a file that wasn't there yet.
+            # Readers swallow the IsADirectoryError and silently see an empty
+            # cache; writers crash. Fail loudly instead.
+            checks.append(_check(
+                False,
+                artifact["key"],
+                artifact["path"] + " (expected a file, found a directory)",
+                "Remove the empty directory and let the tool recreate the file "
+                "(a docker-compose bind mount of a missing file creates one).",
+            ))
+            continue
 
         if is_expected:
             # Must exist; absent → fail (red)
