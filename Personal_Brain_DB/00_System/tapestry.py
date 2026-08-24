@@ -604,6 +604,19 @@ def spreading_activation(
 
 # ─── Backfill：從現有記憶庫重建 Tapestry ──────────────────────
 
+
+def _rel_path(md_file: Path) -> str:
+    """相對路徑正規化：_vault 是私有 submodule，對外路徑應隱藏此前綴。
+
+    Memory.path 是圖譜與 Chroma 之間唯一的 join key，必須與
+    vectorize._rel_path 完全一致，否則 PPR 擴散出來的記憶接不回 chunk。
+    """
+    rel = str(md_file.relative_to(BASE))
+    if rel.startswith("_vault/"):
+        rel = rel[len("_vault/"):]
+    return rel
+
+
 def backfill_from_vault(
     verbose: bool = True,
     require_enriched: bool = False,
@@ -667,7 +680,7 @@ def backfill_from_vault(
         if not has_any:
             skipped_no_entity += 1
 
-        rel_path = str(md_file.relative_to(BASE))
+        rel_path = _rel_path(md_file)
         weave_memory(conn, rel_path, enrichment)
         mem_count += 1
 
