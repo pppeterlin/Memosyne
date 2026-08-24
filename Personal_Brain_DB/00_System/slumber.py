@@ -115,7 +115,7 @@ def _collect_recent_memories(days: int = 14) -> list[dict]:
     return memories
 
 
-def reflect(days: int = 14, model: str = "gemma3:4b", dry_run: bool = False) -> str | None:
+def reflect(days: int = 14, model: str = "deepseek:deepseek-v4-flash", dry_run: bool = False) -> str | None:
     """
     The Reflection — 從近期記憶提煉洞察。
 
@@ -657,7 +657,7 @@ def _cosine_sim(a: list[float], b: list[float]) -> float:
 
 
 def naming_rite(
-    model: str = "gemma3:4b",
+    model: str = "deepseek:deepseek-v4-flash",
     similarity_threshold: float = 0.85,
     dry_run: bool = False,
 ) -> int:
@@ -905,7 +905,7 @@ def _collect_recent_facts(days: int) -> list[dict]:
     return facts
 
 
-def the_ordeal(days: int = 30, model: str = "gemma3:4b",
+def the_ordeal(days: int = 30, model: str = "deepseek:deepseek-v4-flash",
                dry_run: bool = True) -> int:
     """
     The Ordeal — 衝突處理。針對近期 personal_facts 與 Tapestry 既有信念交叉檢查。
@@ -1078,7 +1078,7 @@ def main():
     ap.add_argument("--stats",    action="store_true", help="顯示鞏固統計")
     ap.add_argument("--dry-run",  action="store_true", help="預覽模式，不實際寫入")
     ap.add_argument("--days",     type=int, default=14, help="Reflection 回顧天數（預設 14）")
-    ap.add_argument("--model",    type=str, default="gemma3:4b", help="LLM 模型（Reflection / Naming 用）")
+    ap.add_argument("--model",    type=str, default="deepseek:deepseek-v4-flash", help="LLM 模型（Reflection / Naming 用）")
     ap.add_argument("--all",      action="store_true", help="執行完整鞏固（四個儀式全做）")
     args = ap.parse_args()
 
