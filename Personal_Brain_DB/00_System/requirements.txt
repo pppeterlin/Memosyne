@@ -1,7 +1,6 @@
 # Personal Brain DB 依賴
 # 安裝：/Users/yourname/.virtualenvs/personal-memory/bin/pip install -r requirements.txt
 
-python-snappy>=0.7
 watchdog>=6.0
 chromadb>=1.5
 mcp>=1.0

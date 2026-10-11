@@ -31,7 +31,6 @@ import sys
 import json
 import shutil
 import hashlib
-import zipfile
 import argparse
 import subprocess
 from pathlib import Path
@@ -53,11 +52,7 @@ JOURNAL_DST   = BRAIN_DB / "30_Journal"
 AI_CHAT_DST   = BRAIN_DB / "20_AI_Chats" / "Gemini"
 KNOWLEDGE_DST = BRAIN_DB / "50_Knowledge"
 
-try:
-    import snappy
-    HAS_SNAPPY = True
-except ImportError:
-    HAS_SNAPPY = False
+from pages_reader import PagesExtractionError, extract_pages_text  # noqa: E402
 
 # ─── 九位繆思女神 ─────────────────────────────────────────────
 #
@@ -161,7 +156,7 @@ from dataclasses import dataclass
 
 @dataclass
 class IngestResult:
-    action: str          # inserted | skipped_same | updated | conflict | rejected
+    action: str          # inserted | skipped_same | updated | conflict | rejected | faltered
     dst:    Optional[Path]
     note:   str = ""
 
@@ -462,10 +457,12 @@ def _finalize_md(content: str) -> str:
 
 def route_pages(path: Path, dry_run: bool) -> IngestResult:
     """提取 .pages 文字 → 30_Journal/{year}/"""
-    text = _extract_pages_text(path)
-    if not text.strip():
-        _oracle_say(f"The fragment '{path.name}' is silent — no echoes found. Returned to the mortal world.")
-        return IngestResult(action="rejected", dst=None, note="empty pages extraction")
+    try:
+        text = extract_pages_text(path)
+    except PagesExtractionError as e:
+        print(f"    ✗ The Oracle faltered for: {path.name} — {e}", file=sys.stderr)
+        print(f"      The fragment stays in the Spring; nothing was inscribed.", file=sys.stderr)
+        return IngestResult(action="faltered", dst=None, note=str(e))
 
     date_str, year = _infer_date(path.stem)
     out_dir  = JOURNAL_DST / year
@@ -922,6 +919,7 @@ def main():
     }
 
     new_files: list = []
+    faltered:  list = []
 
     # ── The Discernment ────────────────────────────────────
     print(f"\n  ── I. The Discernment ─────────────────────────────────")
@@ -937,6 +935,8 @@ def main():
             continue
 
         result = router(f, dry_run=args.dry_run)
+        if result.action == "faltered":
+            faltered.append(f)
         if not args.dry_run:
             if result.needs_followup and result.dst and result.dst.exists():
                 new_files.append(result.dst)
@@ -948,8 +948,10 @@ def main():
                 pass
 
     if not new_files:
-        print("\n  All fragments were already known to the vault.")
-        print("  The waters grow still.\n")
+        if not faltered:
+            print("\n  All fragments were already known to the vault.")
+            print("  The waters grow still.\n")
+        _report_faltered(faltered)
         return
 
     # ── The Weaving ────────────────────────────────────────
@@ -967,40 +969,24 @@ def main():
     print(f"  🌊  {len(new_files)} memory fragment(s) have found their eternal place.")
     print(f"      The tapestry of Memosyne grows richer.")
     print()
+    _report_faltered(faltered)
+
+def _report_faltered(faltered: list):
+    """Make extraction failures impossible to miss: list them and exit 1."""
+    if not faltered:
+        return
+    print(f"  ✗ The Oracle faltered for {len(faltered)} fragment(s); they remain in the Spring:",
+          file=sys.stderr)
+    for f in faltered:
+        print(f"      • {f.name}", file=sys.stderr)
+    print(file=sys.stderr)
+    sys.exit(1)
 
 # ─── 輔助函式 ────────────────────────────────────────────────
 
 def _oracle_say(msg: str, indent: bool = False):
     prefix = "     " if indent else "  "
     print(f"{prefix}Oracle: \"{msg}\"")
-
-def _extract_pages_text(path: Path) -> str:
-    try:
-        with zipfile.ZipFile(path) as z:
-            with z.open("Index/Document.iwa") as f:
-                data = f.read()
-    except Exception as e:
-        print(f"  [ERROR] Cannot open {path.name}: {e}")
-        return ""
-
-    if HAS_SNAPPY:
-        try:
-            data = __import__("snappy").decompress(data)
-        except Exception:
-            pass
-
-    chunks = re.findall(b'(?:[\xe4-\xe9][\x80-\xbf]{2}|[\xc0-\xdf][\x80-\xbf]|[\x20-\x7e])+', data)
-    seen, result = set(), []
-    for c in chunks:
-        s = c.decode("utf-8", errors="ignore").strip()
-        if (len(s) > 3
-                and any('\u4e00' <= ch <= '\u9fff' for ch in s)
-                and not re.match(r'^[a-zA-Z0-9\s\-_\.#%,@]+$', s)
-                and s not in seen
-                and s not in ('y年M月d日', 'y/M/d')):
-            seen.add(s)
-            result.append(s)
-    return '\n'.join(result)
 
 def _infer_date(stem: str) -> tuple:
     m = re.match(r'^(\d{6})', stem)

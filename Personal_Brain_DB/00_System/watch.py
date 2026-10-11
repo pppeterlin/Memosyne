@@ -50,9 +50,8 @@ class NewFileHandler(FileSystemEventHandler):
             [sys.executable, str(SCRIPT)],
             capture_output=True, text=True
         )
-        if result.returncode == 0:
-            print(result.stdout.strip())
-        else:
+        print(result.stdout.strip())
+        if result.returncode != 0:
             print(f"[ERROR] {result.stderr.strip()}")
 
 
