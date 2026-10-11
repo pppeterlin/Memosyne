@@ -13,8 +13,11 @@ decompressed independently. The decompressed bytes are a run of archives:
     [varint n][ArchiveInfo (n bytes)][payload 1][payload 2]...
 
 ArchiveInfo.message_infos (field 2) gives each payload's type (field 1) and
-length (field 3). The document body is the TSWP.StorageArchive (type 2001)
-whose kind (field 1) is BODY (0); its text is field 3.
+length (field 3). Text lives in TSWP.StorageArchive objects (type 2001),
+text = field 3; kind (field 1) says where: BODY (0) for a word-processing
+document, TEXTBOX (3, the proto default when absent) for page-layout
+documents. Body + text boxes are returned in stream order; headers,
+footers, footnotes and comments are skipped.
 
 If that layout is not recognised, extraction falls back to the longest
 length-delimited UTF-8 string with ≥4 CJK characters, and says so on stderr.
@@ -40,6 +43,8 @@ from typing import Iterator, Optional
 DOCUMENT_IWA         = "Index/Document.iwa"
 TSWP_STORAGE_ARCHIVE = 2001     # TSWP.StorageArchive message type id
 STORAGE_KIND_BODY    = 0        # TSWP.StorageArchive.KindType.BODY
+STORAGE_KIND_TEXTBOX = 3        # .TEXTBOX — also the default when kind is absent
+CONTENT_KINDS        = (STORAGE_KIND_BODY, STORAGE_KIND_TEXTBOX)
 MIN_CJK              = 4        # fallback heuristic: minimum CJK chars
 
 _CJK = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
@@ -210,17 +215,19 @@ def iwa_messages(raw: bytes) -> Iterator[tuple[int, bytes]]:
             pos = end
 
 
-def body_storage_text(raw: bytes) -> Optional[str]:
+def document_text(raw: bytes) -> Optional[str]:
     """
-    Text of the BODY TSWP.StorageArchive, or None if the stream has none.
+    Text of the BODY and TEXTBOX TSWP.StorageArchives in stream order,
+    separated by blank lines; None if the stream has no such storage.
 
-    Header / footer / text-box storages are ignored even when longer.
+    Header / footer storages are ignored even when longer.
     """
     parts: list[str] = []
+    found = False
     for type_id, payload in iwa_messages(raw):
         if type_id != TSWP_STORAGE_ARCHIVE:
             continue
-        kind, texts = None, []
+        kind, texts = STORAGE_KIND_TEXTBOX, []
         for field, wire, value in _pb_fields(payload):
             if field == 1 and wire == 0:
                 kind = value
@@ -229,9 +236,12 @@ def body_storage_text(raw: bytes) -> Optional[str]:
                     texts.append(value.decode("utf-8"))
                 except UnicodeDecodeError as e:
                     raise PagesExtractionError(f"body text is not UTF-8: {e}") from None
-        if kind == STORAGE_KIND_BODY:
-            parts.append("".join(texts))
-    return "\n".join(parts) if parts else None
+        if kind in CONTENT_KINDS:
+            found = True
+            text = "".join(texts)
+            if _normalize(text):
+                parts.append(text)
+    return "\n\n".join(parts) if found else None
 
 
 def longest_cjk_string(raw: bytes, min_cjk: int = MIN_CJK) -> str:
@@ -294,8 +304,8 @@ def extract_pages_text(path: Path) -> str:
 
     raw = iwa_decompress(data)
     try:
-        body = body_storage_text(raw)
-        reason = "no BODY text storage"
+        body = document_text(raw)
+        reason = "no BODY or TEXTBOX text storage"
     except PagesExtractionError as e:
         body, reason = None, str(e)
 

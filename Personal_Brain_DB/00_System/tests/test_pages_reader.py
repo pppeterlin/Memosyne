@@ -66,9 +66,10 @@ def _archive(identifier: int, type_id: int, payload: bytes) -> bytes:
     return _varint(len(info)) + info + payload
 
 
-def _storage(kind: int, text: str | None) -> bytes:
-    """TSWP.StorageArchive: kind=1, style_sheet ref=2, text=3."""
-    out = _pb_varint(1, kind) + _pb_bytes(2, _pb_varint(1, 42))
+def _storage(kind: int | None, text: str | None) -> bytes:
+    """TSWP.StorageArchive: kind=1 (omitted → TEXTBOX), style_sheet ref=2, text=3."""
+    out = b"" if kind is None else _pb_varint(1, kind)
+    out += _pb_bytes(2, _pb_varint(1, 42))
     if text is not None:
         out += _pb_string(3, text)
     return out
@@ -226,11 +227,20 @@ class TestIwa(unittest.TestCase):
 
     def test_body_storage_ignores_longer_header(self):
         raw = _document("短短的正文內容。", header="頁首文字比正文還要長很多很多很多很多很多。")
-        self.assertEqual(pr.body_storage_text(raw), "短短的正文內容。")
+        self.assertEqual(pr.document_text(raw), "短短的正文內容。")
 
-    def test_body_storage_none_without_body(self):
-        raw = _archive(1, 2001, _storage(3, "文字方塊裡的內容。"))
-        self.assertIsNone(pr.body_storage_text(raw))
+    def test_none_without_content_storage(self):
+        raw = _archive(1, 2001, _storage(1, "只有頁首頁尾的文字。"))
+        self.assertIsNone(pr.document_text(raw))
+
+    def test_page_layout_text_boxes_follow_body(self):
+        raw = (
+            _archive(1, 2001, _storage(0, "  "))                  # empty BODY
+            + _archive(2, 2001, _storage(None, "標題文字方塊"))   # kind omitted
+            + _archive(3, 2001, _storage(1, "頁尾"))
+            + _archive(4, 2001, _storage(3, "主要內容在第二個文字方塊。"))
+        )
+        self.assertEqual(pr.document_text(raw), "標題文字方塊\n\n主要內容在第二個文字方塊。")
 
 
 # ─── fallback heuristic ──────────────────────────────────────
