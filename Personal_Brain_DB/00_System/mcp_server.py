@@ -33,11 +33,11 @@ mcp = FastMCP("personal-brain")
 def _get_collection():
     """懶載入 ChromaDB collection"""
     import chromadb
-    from chromadb.utils import embedding_functions
+    from embed_backend import make_embedding_function, resolve_config
     CHROMA_DIR  = artifact_path("chroma_db")
-    EMBED_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
     client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-    ef = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=EMBED_MODEL)
+    # 與 vectorize.get_collection 同一個 embedding backend（MEMOSYNE_EMBED_*）
+    ef = make_embedding_function(resolve_config())
     return client.get_or_create_collection(
         name="personal_brain",
         embedding_function=ef,

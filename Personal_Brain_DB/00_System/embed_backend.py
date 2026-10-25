@@ -31,6 +31,18 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
+
+# Load .env at module import, same as llm_client: vectorize / search never
+# import llm_client, so without this MEMOSYNE_EMBED_* in .env was ignored on
+# those paths and the index silently fell back to the local default model.
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _ENV_FILE = Path(__file__).resolve().parent.parent.parent / ".env"
+    if _ENV_FILE.exists():
+        _load_dotenv(_ENV_FILE)
+except ImportError:
+    pass
 
 # 本地預設 model(與 v0.7 一致)
 LOCAL_DEFAULT_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
