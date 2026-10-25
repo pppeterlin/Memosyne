@@ -55,9 +55,9 @@ EXCLUDE_FILES = {"README.md", ".cursorrules", "記憶庫掃描評估結果_26041
 # 而漏掉後段的 entities / personal_facts（The Weaving must see the whole cloth）。
 ENRICH_SEGMENT_CHARS = 3000
 
-# 預設 Oracle 模型：優先 DeepSeek（雲端 reasoning，穩定），本地 gemma 作保底。
+# 預設 Oracle 模型：優先 DeepSeek（雲端 flash，快且便宜），本地 gemma 作保底。
 # 雲端端點抽風或某段被審查/重置時，自動退回本地，既保完整覆蓋也讓敏感內容留在本地。
-DEFAULT_ENRICH_MODEL    = "deepseek:deepseek-v4-pro"
+DEFAULT_ENRICH_MODEL    = "deepseek:deepseek-flash"
 DEFAULT_FALLBACK_MODELS = ["gemma4:26b"]
 
 # 每次 LLM 呼叫後的結果格式

@@ -77,7 +77,7 @@ PROVIDERS: list[Provider] = [
     Provider(
         name="deepseek",
         kind="cloud",
-        default_model="deepseek-v4-pro",
+        default_model="deepseek-flash",
         env_hint="DEEPSEEK_API_KEY (or LLM_API_KEY in .env)",
         notes="Frontier reasoning, cheap. v0.6+ supports reasoning_effort + thinking.",
     ),
