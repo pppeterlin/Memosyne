@@ -181,10 +181,18 @@ def build_centroids(min_seeds: int = 3, verbose: bool = True) -> dict[str, list[
     from vectorize import get_collection
 
     _, col = get_collection()
-    raw = col.get(include=["embeddings", "metadatas"])
-    ids   = raw.get("ids", [])
-    embs  = raw.get("embeddings", [])
-    metas = raw.get("metadatas", [])
+    # 分頁取：一次 col.get() 抓整個 collection 會讓 chroma 的 SQL 綁定變數
+    # 爆掉（"too many SQL variables"），同 vectorize._print_stats。
+    ids, embs, metas = [], [], []
+    total, offset = col.count(), 0
+    while offset < total:
+        raw = col.get(limit=5000, offset=offset, include=["embeddings", "metadatas"])
+        if not raw.get("ids"):
+            break
+        ids.extend(raw["ids"])
+        embs.extend(raw["embeddings"])
+        metas.extend(raw["metadatas"])
+        offset += len(raw["ids"])
 
     if not ids:
         raise RuntimeError("ChromaDB 為空，無法建立 centroid — 請先 build_index")
@@ -247,21 +255,25 @@ def _load_centroids() -> dict[str, list[float] | None]:
 
 
 def _embed(text: str) -> list[float]:
-    """計算單一 query 的 embedding（沿用 vectorize 的模型）。"""
+    """計算單一 query 的 embedding（與索引同一個 embedding backend）。
+
+    centroid 是 Chroma 裡 chunk embedding 的平均，所以 query 必須走同一個
+    backend / model（MEMOSYNE_EMBED_*），否則換模型後維度對不上。
+    """
     from model_env import configure_hf_runtime
     configure_hf_runtime()
-    from sentence_transformers import SentenceTransformer
-    from vectorize import EMBED_MODEL
-    # cache model instance
-    global _embed_model
+    from embed_backend import make_embedding_function, resolve_config
+    # cache embedding function instance
+    global _embed_fn
     try:
-        model = _embed_model  # type: ignore[name-defined]
+        fn = _embed_fn  # type: ignore[name-defined]
     except NameError:
-        model = SentenceTransformer(EMBED_MODEL)
-        globals()["_embed_model"] = model
+        fn = make_embedding_function(resolve_config())
+        globals()["_embed_fn"] = fn
     import numpy as np
-    v = model.encode([text], normalize_embeddings=True)[0]
-    return np.asarray(v, dtype=np.float32).tolist()
+    v = np.asarray(fn([text])[0], dtype=np.float32)
+    n = np.linalg.norm(v)
+    return (v / n if n else v).tolist()
 
 
 def route(query: str, top_k: int = 3, threshold: float = 0.15) -> list[tuple[str, float]]:

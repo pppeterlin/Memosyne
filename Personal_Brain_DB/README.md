@@ -235,7 +235,6 @@ pip install -r 00_System/requirements.txt
 ```
 
 ```
-python-snappy>=0.7    # .pages 檔案解壓縮
 watchdog>=6.0         # 檔案監控
 chromadb>=0.5         # 向量資料庫
 mcp>=1.0              # MCP Server

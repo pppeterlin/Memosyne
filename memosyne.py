@@ -51,13 +51,15 @@ def _system_script(name: str) -> Path:
     return SYSTEM_DIR / name
 
 
-def _run_script(name: str, args: list[str]) -> int:
+def _run_script(name: str, args: list[str],
+                env_overrides: dict[str, str] | None = None) -> int:
     script = _system_script(name)
     if not script.exists():
         print(f"[fail] missing script: {script}")
         return 1
     cmd = [PYTHON, str(script), *args]
-    return subprocess.call(cmd, cwd=str(ROOT))
+    env = {**os.environ, **env_overrides} if env_overrides else None
+    return subprocess.call(cmd, cwd=str(ROOT), env=env)
 
 
 def _add_passthrough(subparsers, name: str, help_text: str, script: str, fixed: list[str] | None = None):
@@ -222,6 +224,23 @@ def _collect_health_checks() -> list[HealthCheck]:
         exists = bool(artifact["exists"])
         is_expected = artifact["key"] in expected_keys
         is_ephemeral = bool(artifact.get("ephemeral"))
+        wrong_kind = (exists
+                      and bool(artifact.get("expects_file"))
+                      and bool(artifact.get("is_dir")))
+
+        if wrong_kind:
+            # e.g. contextual_cache.json exists as an empty directory because a
+            # docker-compose bind mount pointed at a file that wasn't there yet.
+            # Readers swallow the IsADirectoryError and silently see an empty
+            # cache; writers crash. Fail loudly instead.
+            checks.append(_check(
+                False,
+                artifact["key"],
+                artifact["path"] + " (expected a file, found a directory)",
+                "Remove the empty directory and let the tool recreate the file "
+                "(a docker-compose bind mount of a missing file creates one).",
+            ))
+            continue
 
         if is_expected:
             # Must exist; absent → fail (red)
@@ -392,6 +411,9 @@ def cmd_quickstart(_: argparse.Namespace) -> int:
     print("   Search your real vault (after first ingest):")
     print("     memosyne search '<question>' --walk deep")
     print()
+    print("   Let the Muses interview you (daily ritual):")
+    print("     memosyne call")
+    print()
     print("   Periodic maintenance:")
     print("     memosyne slumber --reflect --days 14")
     print()
@@ -551,6 +573,12 @@ def build_parser() -> argparse.ArgumentParser:
     search.set_defaults(func=cmd_search)
 
     _add_passthrough(subparsers, "ingest", "run The Spring Ritual", "ingest.py")
+
+    _add_passthrough(
+        subparsers, "call",
+        "The Call of the Muses — daily proactive questions that fill memory gaps",
+        "muse_call.py",
+    )
 
     # `rebuild` used to always pass --rebuild (full wipe-and-rebuild). v0.7
     # changes the default to incremental — for daily ingest workflow that

@@ -122,6 +122,16 @@ ARTIFACTS: dict[str, Artifact] = {
         legacy_shim=False,
         ephemeral=True,
     ),
+    "muse_call_ledger": Artifact(
+        key="muse_call_ledger",
+        relative_path="muse_call_ledger.jsonl",
+        kind="append-only log",
+        privacy="private",
+        description="The Call of the Muses question ledger — asked/answered/"
+                    "skipped history used for question cooldowns.",
+        legacy_shim=False,
+        ephemeral=True,
+    ),
     "dirty_paths": Artifact(
         key="dirty_paths",
         relative_path="dirty_paths.txt",
@@ -171,10 +181,16 @@ def artifact_manifest() -> list[dict]:
     rows: list[dict] = []
     for artifact in ARTIFACTS.values():
         path = artifact_path(artifact.key)
+        # A bind-mounted artifact that never existed on the host comes back
+        # as an empty *directory* (docker-compose creates one). Report the
+        # shape so health can tell "missing" from "wrong kind of thing".
+        expects_file = bool(Path(artifact.relative_path).suffix)
         rows.append({
             "key": artifact.key,
             "path": str(path),
             "exists": path.exists(),
+            "expects_file": expects_file,
+            "is_dir": path.is_dir(),
             "kind": artifact.kind,
             "privacy": artifact.privacy,
             "description": artifact.description,

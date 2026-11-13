@@ -3,10 +3,9 @@
 
 FROM python:3.11-slim AS base
 
-# System dependencies for python-snappy, kuzu, etc.
+# System dependencies for kuzu, etc.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
-        libsnappy-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

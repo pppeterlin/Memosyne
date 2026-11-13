@@ -4,6 +4,41 @@ All notable changes to Memosyne are recorded here. Format inspired by
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow the project's `vMAJOR.MINOR` release sequence.
 
+## [Unreleased] — v1.0 The Call of the Muses
+
+The first release aimed at people other than the author. Memosyne stops
+being a passive archive: the Muses proactively interview you to fill
+the gaps in your own memory vault.
+
+### Added
+
+- **The Call of the Muses (`memosyne call`)** — proactive memory-gap
+  questions. Deterministic gap analysis over the Vault (no LLM, no
+  index required) across five sources: empty domains, missing profile
+  topics (14 identity topics), thin Tapestry persons (mentioned but
+  unknown), silent journal months, and stale domains. Interactive
+  daily ritual; answers land in `spring/` and flow through the
+  standard ingest → enrich → vectorize pipeline.
+- **Question ledger with cooldowns** (`muse_call_ledger.jsonl`,
+  registered as a private ephemeral artifact) — answered questions
+  rest for 120 days, skipped for 14, asked-but-unanswered for 2.
+  `answered` is terminal and never shortened by later events.
+- **`memosyne call --list --json` / `--answer QID --text` / `--stats`**
+  — non-interactive surface for agents, cron jobs, and notifiers.
+- **MCP tools `muse_call` / `muse_answer`** — any MCP-connected agent
+  (Claude Desktop, Cursor, ...) can run the interview conversationally
+  and submit verbatim answers. Scopes: read / write respectively;
+  `muse_answer` is write-gated over HTTP.
+- **`docs/call_of_muses.md`** — full feature documentation.
+- **Bilingual questions** — `--lang en|zh` (or `MEMOSYNE_LANG`).
+
+### Fixed
+
+- **`memosyne quickstart` crashed at Step 3** — `_run_script()` did not
+  accept the `env_overrides` keyword that quickstart passed, raising
+  `TypeError` during the first-run demo. The first-run experience now
+  completes.
+
 ## [Unreleased] — v0.7 The Open Threshold
 
 Polish for adoption. Lowers the bar for a first-time user to install,

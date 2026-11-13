@@ -31,6 +31,18 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
+
+# Load .env at module import, same as llm_client: vectorize / search never
+# import llm_client, so without this MEMOSYNE_EMBED_* in .env was ignored on
+# those paths and the index silently fell back to the local default model.
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _ENV_FILE = Path(__file__).resolve().parent.parent.parent / ".env"
+    if _ENV_FILE.exists():
+        _load_dotenv(_ENV_FILE)
+except ImportError:
+    pass
 
 # 本地預設 model(與 v0.7 一致)
 LOCAL_DEFAULT_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
@@ -59,7 +71,7 @@ class EmbedConfig:
 
     def describe(self) -> str:
         if self.provider == "local":
-            return f"local sentence-transformers ({self.model})"
+            return f"local sentence-transformers ({self.model} @ {resolve_local_device()})"
         return f"{self.provider} {self.model} @ {self.url}"
 
 
@@ -266,6 +278,33 @@ class RemoteEmbeddingFunction:
 
 # ─── 工廠：給 vectorize.get_collection 用 ─────────────────────
 
+def resolve_local_device() -> str:
+    """
+    決定本地 sentence-transformers 要跑在哪個 torch device。
+
+    chromadb 的 SentenceTransformerEmbeddingFunction 預設寫死 device="cpu"，
+    在 Apple Silicon 上等於白白放棄 MPS。auto 會挑當下最快的可用裝置。
+
+    MEMOSYNE_EMBED_DEVICE=auto|cpu|mps|cuda（預設 auto）
+    """
+    choice = (os.environ.get("MEMOSYNE_EMBED_DEVICE") or "auto").strip().lower()
+    if choice and choice != "auto":
+        return choice
+    try:
+        import torch
+    except ImportError:
+        return "cpu"
+    try:
+        if torch.cuda.is_available():
+            return "cuda"
+        mps = getattr(torch.backends, "mps", None)
+        if mps is not None and mps.is_available():
+            return "mps"
+    except Exception:
+        return "cpu"
+    return "cpu"
+
+
 def make_embedding_function(config: EmbedConfig | None = None):
     """
     回傳一個 chromadb 可用的 embedding function。
@@ -277,6 +316,7 @@ def make_embedding_function(config: EmbedConfig | None = None):
     if cfg.provider == "local":
         from chromadb.utils import embedding_functions
         return embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name=cfg.model
+            model_name=cfg.model,
+            device=resolve_local_device(),
         )
     return RemoteEmbeddingFunction(cfg)

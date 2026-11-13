@@ -68,7 +68,9 @@ and the Tapestry graph. `memosyne health` confirms everything wired up.
   warns + leaves the spring source in place for manual triage.
 - **Journal `.txt` / `.md`**: filename `YYMMDD_topic.md` is the convention.
   Frontmatter optional — `ingest.py` synthesizes one if missing.
-- **`.pages` files**: extracted via `_extract_pages_text`. macOS only.
+- **`.pages` files**: extracted via `pages_reader.extract_pages_text`
+  (pure Python, no native deps). A file that can't be read is reported as
+  "The Oracle faltered", left in `spring/`, and ingest exits non-zero.
 - **Knowledge notes**: include `type: knowledge` in frontmatter to route
   to Urania's domain (`50_Knowledge/`).
 

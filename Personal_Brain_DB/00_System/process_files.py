@@ -14,10 +14,10 @@ Personal Brain DB — 檔案處理主腳本
 
 import os
 import re
+import sys
 import json
 import uuid
 import hashlib
-import zipfile
 import argparse
 from pathlib import Path
 from datetime import datetime
@@ -32,11 +32,7 @@ NOTES_SRC  = REPO_ROOT / "notes"
 GEMINI_DST = BASE / "20_AI_Chats" / "Gemini"
 JOURNAL_DST = BASE / "30_Journal"
 
-try:
-    import snappy
-    HAS_SNAPPY = True
-except ImportError:
-    HAS_SNAPPY = False
+from pages_reader import PagesExtractionError, extract_pages_text
 
 # ─── A. Gemini 對話處理 ──────────────────────────────────────
 
@@ -140,39 +136,6 @@ def process_gemini_files(force: bool = False):
 
 # ─── B. Pages 手札處理 ───────────────────────────────────────
 
-def extract_pages_text(path: Path) -> str:
-    """從 .pages 檔案提取純文字（支援 snappy 壓縮）"""
-    with zipfile.ZipFile(path) as z:
-        with z.open('Index/Document.iwa') as f:
-            data = f.read()
-
-    if HAS_SNAPPY:
-        try:
-            data = snappy.decompress(data)
-        except Exception:
-            pass
-
-    # 提取 CJK + ASCII 可讀字段
-    chunks = re.findall(b'(?:[\xe4-\xe9][\x80-\xbf]{2}|[\xc0-\xdf][\x80-\xbf]|[\x20-\x7e])+', data)
-    lines = []
-    for c in chunks:
-        s = c.decode('utf-8', errors='ignore').strip()
-        # 過濾系統 metadata（純英數、格式字串等）
-        if (len(s) > 3
-                and any('\u4e00' <= ch <= '\u9fff' for ch in s)
-                and not re.match(r'^[a-zA-Z0-9\s\-_\.#%,@]+$', s)):
-            lines.append(s)
-
-    # 去重並保留有意義的行
-    seen = set()
-    result = []
-    for l in lines:
-        if l not in seen and l not in ('y年M月d日', 'y/M/d'):
-            seen.add(l)
-            result.append(l)
-
-    return '\n'.join(result)
-
 def infer_journal_date(filename: str) -> tuple:
     """從檔名推斷日期，回傳 (date_str, year)"""
     stem = Path(filename).stem
@@ -184,11 +147,11 @@ def infer_journal_date(filename: str) -> tuple:
         return f'{year}-{mm}-{dd}', str(year)
     return datetime.now().strftime('%Y-%m-%d'), str(datetime.now().year)
 
-def process_notes(force: bool = False):
-    """將 .pages 手札轉換為 .md 並歸檔至 30_Journal"""
+def process_notes(force: bool = False) -> int:
+    """將 .pages 手札轉換為 .md 並歸檔至 30_Journal；回傳失敗數"""
     if not NOTES_SRC.exists():
         print(f"[SKIP] Notes 來源目錄不存在: {NOTES_SRC}")
-        return
+        return 0
 
     processed = 0
     skipped   = 0
@@ -207,14 +170,9 @@ def process_notes(force: bool = False):
 
         try:
             text = extract_pages_text(src_file)
-        except Exception as e:
-            print(f"[ERROR] {src_file.name}: {e}")
+        except PagesExtractionError as e:
+            print(f"[ERROR] The Oracle faltered for: {src_file.name} — {e}", file=sys.stderr)
             errors += 1
-            continue
-
-        if not text.strip():
-            print(f"[EMPTY] {src_file.name}")
-            skipped += 1
             continue
 
         uid     = hashlib.md5(src_file.name.encode()).hexdigest()[:12]
@@ -241,6 +199,7 @@ summary: "{summary}"
         print(f"[NOTES] {src_file.name} → {dst_file.relative_to(BASE)}")
 
     print(f"[NOTES] 處理完成：{processed} 個新增，{skipped} 個已存在，{errors} 個錯誤")
+    return errors
 
 def infer_journal_tags(text: str) -> list:
     keywords = {
@@ -338,11 +297,13 @@ def main():
 
     process_gemini_files(force=force)
     print()
-    process_notes(force=force)
+    errors = process_notes(force=force)
     print()
     build_index()
 
     print("\n=== 處理完成 ===")
+    if errors:
+        sys.exit(1)
 
 if __name__ == '__main__':
     main()

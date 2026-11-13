@@ -64,7 +64,7 @@ FLASHRANK_CACHE = Path(__file__).parent / "flashrank_cache"
 LOCAL_MODEL      = "gemma4:26b"
 CLOUD_MODEL      = "gemini-2.0-flash-lite"   # 免費額度最高的 Gemini 模型
 PROXY_MODEL      = "proxy:claude-opus-4-6"   # 反代理（aiclient-2-api → Claude Opus）
-DEEPSEEK_MODEL   = "deepseek:deepseek-v4-pro" # DeepSeek 官方雲端（.env 的 LLM_API_KEY）
+DEEPSEEK_MODEL   = "deepseek:deepseek-flash" # DeepSeek 官方雲端（.env 的 DEEPSEEK_API_KEY 或 LLM_API_KEY）
 
 FETCH_K          = 10
 KEEP_K           = 4
@@ -566,7 +566,7 @@ def pick_backend(forced: str) -> tuple[str, str, object | None]:
         print("│  [1] 本地 Ollama（gemma4:26b）           │")
         print("│  [2] 雲端 Gemini（gemini-2.0-flash-lite）│")
         print("│  [3] 反代理 Proxy（claude-opus-4-6）     │")
-        print("│  [4] 雲端 DeepSeek（deepseek-v4-pro）    │")
+        print("│  [4] 雲端 DeepSeek（deepseek-flash）     │")
         print("└─────────────────────────────────────────┘")
         try:
             choice = input("選擇 [1/2/3/4]（預設 1）: ").strip() or "1"

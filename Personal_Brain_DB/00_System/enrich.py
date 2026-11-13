@@ -45,17 +45,19 @@ from artifacts import data_root
 BASE       = data_root()
 SYSTEM_DIR = Path(__file__).parent
 
-EXCLUDE_DIRS  = {"00_System"}
-EXCLUDE_FILES = {"README.md", ".cursorrules"}
+# 不做 LLM enrichment 的頂層目錄。除了系統目錄，也排除衍生產物目錄——
+# augury / benchmark 報告是系統自己產生的，不是記憶，enrich 它們只是燒錢。
+EXCLUDE_DIRS  = {"00_System", "augury_reports", "benchmark_reports", "logs"}
+EXCLUDE_FILES = {"README.md", ".cursorrules", "記憶庫掃描評估結果_260412.md"}
 
 # 單次 LLM enrichment 餵入的最大字元數。超過此長度的長檔（如一次性匯入的
 # 大型個人 profile）會被切成多段、各自 enrich，再合併結果——避免只看開頭
 # 而漏掉後段的 entities / personal_facts（The Weaving must see the whole cloth）。
 ENRICH_SEGMENT_CHARS = 3000
 
-# 預設 Oracle 模型：優先 DeepSeek（雲端 reasoning，穩定），本地 gemma 作保底。
+# 預設 Oracle 模型：優先 DeepSeek（雲端 flash，快且便宜），本地 gemma 作保底。
 # 雲端端點抽風或某段被審查/重置時，自動退回本地，既保完整覆蓋也讓敏感內容留在本地。
-DEFAULT_ENRICH_MODEL    = "deepseek:deepseek-v4-pro"
+DEFAULT_ENRICH_MODEL    = "deepseek:deepseek-flash"
 DEFAULT_FALLBACK_MODELS = ["gemma4:26b"]
 
 # 每次 LLM 呼叫後的結果格式
@@ -622,6 +624,20 @@ def critique_enrichment(enrichment: dict, original_text: str, model: str) -> dic
 
 # ─── 主流程 ─────────────────────────────────────────────────
 
+
+def _rel_path(md_file: Path) -> str:
+    """相對路徑正規化：_vault 是私有 submodule，對外路徑應隱藏此前綴。
+
+    必須與 vectorize._rel_path 完全一致——Tapestry 的 Memory.path 是圖譜與
+    向量索引之間唯一的 join key，兩邊算法不同會讓同一份記憶在圖裡分裂成
+    兩個節點，PPR 擴散的結果就接不回 Chroma 的 chunk。
+    """
+    rel = str(md_file.relative_to(BASE))
+    if rel.startswith("_vault/"):
+        rel = rel[len("_vault/"):]
+    return rel
+
+
 def collect_files(target_file: str | None = None) -> list[Path]:
     if target_file:
         p = (BASE / target_file) if not Path(target_file).is_absolute() else Path(target_file)
@@ -629,7 +645,9 @@ def collect_files(target_file: str | None = None) -> list[Path]:
 
     files = []
     for md in sorted(BASE.rglob("*.md")):
-        parts = md.relative_to(BASE).parts
+        # 用正規化後的相對路徑判斷，否則 vault 是 submodule 時 parts[0]
+        # 永遠是 "_vault"，底下每一條排除規則都不會命中。
+        parts = Path(_rel_path(md)).parts
         if parts[0] in EXCLUDE_DIRS:
             continue
         if md.name in EXCLUDE_FILES:
@@ -705,7 +723,7 @@ def enrich_all(model: str, rebuild: bool, dry_run: bool, target_file: str | None
         print(f"[{i}/{total}] {path.relative_to(BASE)} ... ", end="", flush=True)
 
         try:
-            rel = str(path.relative_to(BASE))
+            rel = _rel_path(path)
             is_chat = rel.startswith("20_AI_Chats/")
             raw_enrichment  = call_llm(title, full_text, model,
                                        filename_hint=fname_hint, is_ai_chat=is_chat,
@@ -734,7 +752,7 @@ def enrich_all(model: str, rebuild: bool, dry_run: bool, target_file: str | None
             # Frontmatter 仍只寫 LLM 結果（保留 Oracle 的 ground-truth 契約），
             # 但圖譜會吸收 [[wikilink]] / @mention 等 LLM 可能漏抽的訊號。
             if tapestry_conn is not None:
-                rel_path = str(path.relative_to(BASE))
+                rel_path = _rel_path(path)
                 weave_payload = enrichment
                 if _det_extract is not None and _merge_ext is not None:
                     try:
