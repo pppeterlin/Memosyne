@@ -1,45 +1,21 @@
-# Git
 .git/
-.gitignore
-
-# Personal memory data (mounted as volumes)
-Personal_Brain_DB/10_Profile/
-Personal_Brain_DB/20_AI_Chats/
-Personal_Brain_DB/30_Journal/
-Personal_Brain_DB/40_Projects/
-Personal_Brain_DB/50_Knowledge/
-spring/
-
-# Generated databases (mounted as volumes)
-Personal_Brain_DB/00_System/chroma_db/
-Personal_Brain_DB/00_System/tapestry_db/
-Personal_Brain_DB/00_System/bm25_index.pkl
-Personal_Brain_DB/00_System/contextual_cache.json
-Personal_Brain_DB/00_System/hyqe_cache.json
-Personal_Brain_DB/00_System/muse_centroids.json
-Personal_Brain_DB/00_System/flashrank_cache/
-Personal_Brain_DB/00_System/index.json
-Personal_Brain_DB/00_System/augury_reports/
-
-# Private vault submodule (never enters any docker image)
-Personal_Brain_DB/_vault/
-
-# Sample vault derived artifacts (rebuilt inside the verify image)
-sample_vault/_artifacts/
-
-# Worktrees and editor scratch
-.claude/worktrees/
-docs/learning/
-
-# Environment & secrets
-.env
+.github/
+.venv/
 .claude/
 _internal/
-
-# Python cache
-__pycache__/
-*.pyc
-*.pyo
-
-# OS
+**/__pycache__/
+*.py[co]
+*.egg-info/
 .DS_Store
+
+# Secrets and personal data never enter an image; mount them at runtime.
+.env
+.env.*
+*.key
+openrouter-key
+ANTHROPIC_API_KEY
+vault/
+Personal_Brain_DB/
+spring/
+sample_vault/_artifacts/
+sample_vault/_digest/

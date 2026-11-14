@@ -20,7 +20,7 @@ each time holding two knobs at default and flipping the third:
 
 Per-prefix decay is not flipped here — the decay map is a structured
 config, not a boolean. Its "off" semantics (all prefixes evergreen) is
-exercised in `tests/test_mneme_weight.py` instead.
+exercised in `tests/unit/test_access_log_decay.py` instead.
 
 ## Results (sample golden, N=5)
 

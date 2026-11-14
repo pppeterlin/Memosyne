@@ -24,6 +24,9 @@ SCAN_TARGETS=(
   "AGENTS.md"
   "CLAUDE.md"
   "docs/"
+  "src/"
+  "tests/"
+  "scripts/"
 )
 
 STAGED_ONLY=0
@@ -50,17 +53,17 @@ scan_file() {
   # 跳過 *.local.md（gitignored）
   case "$f" in *.local.md) return 0 ;; esac
 
+  # 一個檔案一條 grep pipeline（逐行 spawn grep 在掃描程式碼時會慢到以分鐘計）：
+  # 命中真實 path → 去掉 placeholder 行 → 去掉標 example 的行
+  local hits
+  hits=$(grep -En "$PATTERN" "$f" 2>/dev/null \
+           | grep -Ev "$PLACEHOLDERS" \
+           | grep -Ev "$ALLOW_MARK" || true)
+  [[ -z "$hits" ]] && return 0
   while IFS= read -r line; do
-    # 跳過明顯的 placeholder 行
-    if echo "$line" | grep -Eq "$PLACEHOLDERS"; then continue; fi
-    # 跳過標 example 的行
-    if echo "$line" | grep -Eq "$ALLOW_MARK"; then continue; fi
-    # 命中真實 path
-    if echo "$line" | grep -Eq "$PATTERN"; then
-      echo "$f: $line" >> "$hits_file"
-      violations=$((violations + 1))
-    fi
-  done < "$f"
+    echo "$f:$line" >> "$hits_file"
+    violations=$((violations + 1))
+  done <<< "$hits"
 }
 
 if (( STAGED_ONLY )); then
@@ -74,7 +77,7 @@ else
     if [[ -d "$target" ]]; then
       while IFS= read -r f; do
         scan_file "$f"
-      done < <(find "$target" -type f \( -name "*.md" -o -name "*.txt" \) 2>/dev/null)
+      done < <(find "$target" -type f \( -name "*.md" -o -name "*.txt" -o -name "*.py" -o -name "*.sh" -o -name "*.yml" -o -name "*.toml" \) 2>/dev/null)
     elif [[ -f "$target" ]]; then
       scan_file "$target"
     fi

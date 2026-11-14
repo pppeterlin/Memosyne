@@ -125,19 +125,18 @@ vault 中沒有任何兄弟姐妹資訊。預期行為：
 export MEMOSYNE_VAULT_DIR=$PWD/sample_vault
 export MEMOSYNE_ARTIFACT_DIR=$PWD/sample_vault/_artifacts
 
-# 健檢（衍生 artifacts 一開始全是 fail，正常）
-python memosyne.py rebuild
-python memosyne.py health
-python memosyne.py search "Aiko"
+memosyne rebuild
+memosyne health
+memosyne search "Aiko"
 ```
 
 > **注意**：`MEMOSYNE_VAULT_DIR` 切換的是 Memosyne 看的「資料根目錄」（包含 `10_Profile/` 等繆思資料夾的目錄）。`MEMOSYNE_ARTIFACT_DIR` 進一步把所有衍生 artifacts（ChromaDB、BM25 index、Tapestry graph、caches）導到指定路徑——sample 模式建議指向 `sample_vault/_artifacts/`（已 gitignored）以免與你的私有索引混在一起。
 >
-> 兩個 env var 都不設時，Memosyne 走預設的 `Personal_Brain_DB/` 路徑（含 symlink shim 與 `_vault` submodule）。
+> 兩個 env var 都不設時，Memosyne 使用 `<home>/vault`（見 [configuration.md](configuration.md)）。最省事的方式是直接跑 `memosyne quickstart`，它會自動把環境指向 sample vault。
 
 ### 驗證 MCP server 可用
 
-`tests/test_mcp_smoke.py` 在 sample_vault 的索引上跑一次 stdio 端對端測試：spawn `mcp_server.py`、initialize、`tools/list`、實際呼叫 `search_memory` 與 `get_memory_health`，沒有任何 LLM 呼叫，純離線。
+`tests/test_mcp_smoke.py` 在 sample_vault 的索引上跑一次 stdio 端對端測試：spawn `python -m memosyne.mcp_server`、initialize、`tools/list`、實際呼叫 `search_memory` 與 `get_memory_health`，沒有任何 LLM 呼叫，純離線。
 
 ```bash
 # 需要先跑過上面的 rebuild 把 sample 索引建起來
@@ -156,7 +155,7 @@ Pass 條件：14 個 tools 註冊成功、`search_memory("Aiko")` 結果含 samp
 
 ```bash
 # 假設 sample 索引已用上面的 rebuild 建好
-python memosyne.py eval --sample
+memosyne eval --sample
 ```
 
 輸出包含 Recall@1 / Recall@5 / Recall@10 / MRR，以及每題的 hit rank。Sample 規模小、未經調校，預期 Recall@5 ≈ 1.00、MRR 落在 0.3 左右——指的是「正確檔案總在前 5 名內，但 top-1 不一定」。重點是這條 evaluation pipeline 在 sample 資料上跑得通，方便貢獻者驗證自己的修改沒有打壞檢索。

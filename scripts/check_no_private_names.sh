@@ -28,6 +28,9 @@ SCAN_TARGETS=(
   "AGENTS.md"
   "CLAUDE.md"
   "docs/"
+  "src/"
+  "tests/"
+  "scripts/"
   "sample_vault/"
 )
 
@@ -93,7 +96,7 @@ else
       while IFS= read -r f; do
         case "$f" in *.local.md) continue ;; esac
         grep -F -n -H -f "$terms_file" "$f" >> "$hits_file" 2>/dev/null || true
-      done < <(find "$target" -type f \( -name "*.md" -o -name "*.txt" -o -name "*.yaml" -o -name "*.toml" \) 2>/dev/null)
+      done < <(find "$target" -type f \( -name "*.md" -o -name "*.txt" -o -name "*.yaml" -o -name "*.toml" -o -name "*.py" -o -name "*.sh" \) 2>/dev/null)
     elif [[ -f "$target" ]]; then
       grep -F -n -H -f "$terms_file" "$target" >> "$hits_file" 2>/dev/null || true
     fi
