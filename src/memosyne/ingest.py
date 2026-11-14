@@ -1,0 +1,1043 @@
+#!/usr/bin/env python3
+"""
+Memosyne — The Spring Ritual (ingest.py)
+
+把任何格式的記憶碎片放進 spring/ 資料夾，召喚 Oracle 完成三個儀式：
+
+  The Discernment  — 九位繆思女神辨識記憶類型，路由至正確領域
+  The Weaving      — Oracle 提取精華，編織進永恆的 YAML 銘文
+  The Inscription  — 向量化，銘刻入記憶庫，不再遺失於忘川
+
+用法：
+  memosyne ingest              # 標準入庫
+  memosyne ingest --dry-run    # 預覽，不執行任何寫入
+  memosyne ingest --no-enrich  # 跳過 Weaving（快速入庫）
+  memosyne ingest --no-index   # 跳過 Inscription
+  memosyne ingest --rebuild    # 完整重建索引
+  memosyne ingest --model gemma3:4b  # 指定 Oracle 模型
+
+支援格式：
+  .pages  → Clio（歷史）     → 30_Journal/{YEAR}/
+  .md/.txt → Thalia（生活）   → 30_Journal/{YEAR}/
+            Calliope（對話）  → 20_AI_Chats/Gemini/
+            Urania（知識）    → 50_Knowledge/
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import sys
+import json
+import shutil
+import hashlib
+import argparse
+import subprocess
+from pathlib import Path
+from typing import Optional
+from datetime import datetime
+
+from memosyne.pages_reader import PagesExtractionError, extract_pages_text
+from memosyne.paths import artifact_path, data_root, home, iter_memory_files, spring_dir
+
+# ─── 路徑設定 ────────────────────────────────────────────────
+
+ROOT          = home()
+SPRING_DIR    = spring_dir()                          # 記憶之泉 drop zone
+PROCESSED     = SPRING_DIR / "_processed"             # 處理後歸檔
+BRAIN_DB      = data_root()
+
+JOURNAL_DST   = BRAIN_DB / "30_Journal"
+AI_CHAT_DST   = BRAIN_DB / "20_AI_Chats" / "Gemini"
+KNOWLEDGE_DST = BRAIN_DB / "50_Knowledge"
+
+# ─── 九位繆思女神 ─────────────────────────────────────────────
+#
+#  每種記憶類型由一位女神領受，銘刻於其領域
+#
+MUSES = {
+    "pages":     ("Clio",     "Keeper of History",       "30_Journal"),
+    "journal":   ("Thalia",   "Voice of Daily Life",     "30_Journal"),
+    "gemini":    ("Calliope", "Weaver of Conversations", "20_AI_Chats/Gemini"),
+    "knowledge": ("Urania",   "Guardian of Wisdom",      "50_Knowledge"),
+}
+
+# ─── 格式偵測 ────────────────────────────────────────────────
+
+GEMINI_PATTERNS = [
+    r'備份時間：',
+    r'## 對話記錄',
+    r'\*\*你\*\*\s*\n',
+    r'\*\*Gemini\*\*\s*\n',
+]
+
+SKIP_NAMES = {"README.md", "README.txt", ".gitkeep", ".DS_Store"}
+
+# ─── 檔名解析 ────────────────────────────────────────────────
+
+def extract_filename_hint(stem: str) -> list:
+    """
+    從檔名提取有意義的關鍵詞。
+    規則：
+      - 純數字開頭（YYMMDD / YYYYMMDD）→ 只記日期，不提取
+      - 日期後的部分 / 非日期名稱 → 按 _- 分割，保留有意義的詞
+      - 過濾：純英文單字母、hex hash（8位以上的十六進位）、純數字
+    例：
+      260410_CityA旅行_LakeB            → ["CityA旅行", "LakeB"]
+      某公司工作日誌_Q1            → ["某公司工作日誌", "Q1"]
+      感謝房東贈禮_a830cb0247     → ["感謝房東贈禮"]
+      260410                         → []（純日期）
+    """
+    # 移除日期前綴（YYMMDD 或 YYYYMMDD）
+    s = re.sub(r'^\d{6,8}', '', stem).strip('_- ')
+    if not s:
+        return []
+    # 按常見分隔符切割
+    parts = re.split(r'[_\-\s]+', s)
+    result = []
+    for p in parts:
+        if len(p) < 2:                        continue  # 單字元
+        if re.fullmatch(r'[0-9a-f]{8,}', p): continue  # hex hash
+        if re.fullmatch(r'\d+', p):           continue  # 純數字
+        result.append(p)
+    return result
+
+def detect_type(path: Path) -> str:
+    """回傳：'pages' | 'gemini' | 'journal' | 'knowledge' | 'unknown'"""
+    if path.suffix.lower() == ".pages":
+        return "pages"
+
+    if path.suffix.lower() not in (".md", ".txt"):
+        return "unknown"
+
+    content = path.read_text(encoding="utf-8", errors="ignore")
+
+    # Gemini 匯出：特徵字串 or 帶 hash 的檔名
+    if any(re.search(p, content) for p in GEMINI_PATTERNS):
+        return "gemini"
+    if re.search(r'_[0-9a-f]{8,16}\.md$', path.name):
+        return "gemini"
+
+    # frontmatter type 欄位
+    if content.startswith("---"):
+        fm_type = _quick_fm_field(content, "type")
+        if fm_type in ("knowledge", "知識"):
+            return "knowledge"
+
+    # 日期型檔名（YYMMDD / YYYY-MM-DD）
+    if re.match(r'^\d{6}', path.stem) or re.match(r'^\d{4}-\d{2}-\d{2}', path.stem):
+        return "journal"
+
+    return "journal"
+
+def _quick_fm_field(content: str, field: str) -> str:
+    end = content.find("\n---", 3)
+    block = content[3:end] if end > 0 else content[3:300]
+    m = re.search(rf'^{field}\s*:\s*"?([^"\n]+)"?', block, re.MULTILINE)
+    return m.group(1).strip() if m else ""
+
+# ─── 路由：The Discernment ───────────────────────────────────
+
+# ─── v0.6: content-hash aware result type ─────────────────────
+#
+# Pre-v0.6 routers returned Optional[Path]: a path on success-or-skip,
+# None on rejection. main() then unconditionally archived the spring
+# source whenever the router returned a path — which silently dropped
+# updated content when filename matched but body differed.
+#
+# v0.6 splits "this ingestion happened" from "the spring source should
+# be archived". A conflict (same filename, different body, no turn-aware
+# update path) keeps the spring source in place so the user can decide.
+
+from dataclasses import dataclass
+
+@dataclass
+class IngestResult:
+    action: str          # inserted | skipped_same | updated | conflict | rejected | faltered
+    dst:    Optional[Path]
+    note:   str = ""
+
+    @property
+    def should_archive(self) -> bool:
+        """Spring source moves to _processed/ unless we hit a conflict."""
+        return self.action in ("inserted", "skipped_same", "updated")
+
+    @property
+    def needs_followup(self) -> bool:
+        """Should enrich + vectorize run for this file?"""
+        return self.action in ("inserted", "updated")
+
+
+def _extract_content_hash_from_frontmatter(content: str) -> str:
+    """
+    Return the content_hash field declared in the file's frontmatter,
+    or "" if absent. Cheap regex — avoids importing yaml here.
+    """
+    if not content.startswith("---"):
+        return ""
+    end = content.find("\n---", 3)
+    if end == -1:
+        return ""
+    fm = content[3:end]
+    m = re.search(r'^content_hash:\s*["\']?([^"\'\n]+)', fm, re.MULTILINE)
+    return m.group(1).strip() if m else ""
+
+
+def _inject_or_replace_content_hash(content: str, new_hash: str) -> str:
+    """
+    Ensure frontmatter contains `content_hash: "<new_hash>"`.
+    Adds if missing, replaces if present. Leaves body untouched.
+    Requires content to already have frontmatter; caller should check.
+    """
+    if not content.startswith("---"):
+        return content
+    end = content.find("\n---", 3)
+    if end == -1:
+        return content
+    fm = content[3:end]
+    body = content[end:]  # includes the closing ---
+
+    if "content_hash:" in fm:
+        fm = re.sub(
+            r'^content_hash:.*$',
+            f'content_hash: "{new_hash}"',
+            fm,
+            count=1,
+            flags=re.MULTILINE,
+        )
+    else:
+        # Insert before the closing ---; keep one trailing newline
+        fm = fm.rstrip("\n") + f'\ncontent_hash: "{new_hash}"\n'
+    return "---" + fm + body
+
+
+def _classify_against_dst(spring_content: str, dst: Path) -> tuple[str, str, str]:
+    """
+    Compare a freshly-read spring file against an existing vault file.
+
+    Returns (verdict, spring_hash, dst_hash) where verdict is one of:
+        same      — bodies match; safe to skip
+        diverged  — bodies differ; needs Phase-1 turn-aware path or warn
+
+    Pure function — no IO beyond reading dst.
+    """
+    from memosyne.content_hash import body_hash as _body_hash
+    spring_hash = _body_hash(spring_content)
+    try:
+        dst_content = dst.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return "diverged", spring_hash, ""
+    declared = _extract_content_hash_from_frontmatter(dst_content)
+    dst_hash = declared or _body_hash(dst_content)
+    if spring_hash == dst_hash:
+        return "same", spring_hash, dst_hash
+    return "diverged", spring_hash, dst_hash
+
+
+def _warn_conflict(spring_path: Path, dst: Path, spring_hash: str, dst_hash: str) -> None:
+    """Phase 0: surface a divergence loudly so the user can intervene."""
+    print(f"    ⚠  Conflict: {spring_path.name} differs from the vault copy.")
+    print(f"       vault path:  {dst.relative_to(ROOT) if dst.is_absolute() else dst}")
+    print(f"       spring hash: {spring_hash[:23]}…")
+    print(f"       vault hash:  {dst_hash[:23]}…")
+    print(f"       The spring source is NOT archived — review and decide:")
+    print(f"         • re-export accidentally?            → delete {spring_path.name} from spring/")
+    print(f"         • intentional update of a thread?    → wait for turn-aware update (v0.6 Phase 1)")
+    print(f"         • genuinely different memory?        → rename and re-ingest")
+
+
+# ─── v0.6 Phase 1: turn-aware update helpers ─────────────────
+
+def _extract_fm_field(content: str, field: str) -> str:
+    """Cheap regex pull of a frontmatter scalar (no nested structures)."""
+    if not content.startswith("---"):
+        return ""
+    end = content.find("\n---", 3)
+    if end == -1:
+        return ""
+    fm = content[3:end]
+    m = re.search(rf'^{re.escape(field)}:\s*["\']?([^"\'\n]+)', fm, re.MULTILINE)
+    return m.group(1).strip() if m else ""
+
+
+def _bump_date_updated(content: str, today_str: str) -> str:
+    """Set or insert date_updated in frontmatter."""
+    if not content.startswith("---"):
+        return content
+    end = content.find("\n---", 3)
+    if end == -1:
+        return content
+    fm = content[3:end]
+    body = content[end:]
+    if re.search(r'^date_updated:', fm, re.MULTILINE):
+        fm = re.sub(r'^date_updated:.*$', f'date_updated: {today_str}',
+                    fm, count=1, flags=re.MULTILINE)
+    else:
+        fm = fm.rstrip("\n") + f'\ndate_updated: {today_str}\n'
+    return "---" + fm + body
+
+
+def _clear_enriched_at(content: str) -> str:
+    """
+    Remove enriched_at so enrich.py picks the file up again on the next
+    Weaving pass. v0.6 Phase 1 re-enriches whole file on update; partial
+    turn-only enrichment is Phase 3 work.
+    """
+    if not content.startswith("---"):
+        return content
+    end = content.find("\n---", 3)
+    if end == -1:
+        return content
+    fm = content[3:end]
+    body = content[end:]
+    fm = re.sub(r'^enriched_at:.*\n?', '', fm, flags=re.MULTILINE)
+    return "---" + fm + body
+
+
+def _try_turn_aware_gemini_update(
+    spring_content: str,
+    dst: Path,
+    dst_content: str,
+    dry_run: bool,
+) -> IngestResult | None:
+    """
+    Phase 1: try to merge a re-imported Gemini file into the existing
+    vault copy. Returns:
+      - IngestResult(action="updated")      if new turns found + merged
+      - IngestResult(action="skipped_same") if turn diff is empty (all known)
+      - None                                 if the format doesn't parse —
+                                             caller should fall back to
+                                             the file-level conflict warning
+
+    Side effects on success:
+      - dst is overwritten with the new content (uuid preserved,
+        date_updated bumped, content_hash refreshed, enriched_at cleared
+        so enrich re-processes)
+      - turn_ledger gets every spring turn recorded (insert-or-ignore)
+      - any existing vector chunks for this path are scheduled for
+        refresh on the next vectorize run (caller's responsibility to
+        invoke vectorize.refresh_paths, since ingest doesn't talk to
+        Chroma directly)
+    """
+    try:
+        from memosyne.turns import GeminiParser, diff_against_known
+        from memosyne.turn_ledger import known_turn_hashes, record_turns
+    except ImportError:
+        return None
+
+    parser = GeminiParser()
+    spring_turns = parser.split_turns(spring_content)
+    if not spring_turns:
+        return None  # not a parseable Gemini export — fall back to conflict warn
+
+    dst_uuid = _extract_fm_field(dst_content, "uuid")
+    if not dst_uuid:
+        # No uuid to preserve — safer to treat as conflict than to mint
+        # a new uuid and risk Chronicle/Tapestry continuity issues.
+        return None
+
+    rel_path = str(dst.relative_to(BRAIN_DB)) if dst.is_absolute() else str(dst)
+    known = known_turn_hashes(memory_uuid=dst_uuid)
+
+    # First-time Gemini update: ledger has no prior turns recorded for
+    # this memory. Backfill the existing dst's turns so the diff is honest.
+    if not known:
+        prior_turns = parser.split_turns(dst_content)
+        if prior_turns:
+            if not dry_run:
+                record_turns([
+                    {
+                        "turn_hash":   t.hash,
+                        "memory_uuid": dst_uuid,
+                        "memory_path": rel_path,
+                        "turn_index":  t.index,
+                        "source":      "gemini",
+                    }
+                    for t in prior_turns
+                ], enriched=True, embedded=True)
+            known = {t.hash for t in prior_turns}
+
+    new_turns = diff_against_known(spring_turns, known)
+
+    if not new_turns:
+        # All spring turns already in ledger → genuinely a duplicate
+        return IngestResult(action="skipped_same", dst=dst,
+                            note="all turns already in ledger")
+
+    # Rebuild dst content from spring while preserving identity fields
+    from datetime import datetime as _dt
+    today = _dt.now().strftime("%Y-%m-%d")
+    merged = spring_content
+    # Replace any uuid in spring with dst's uuid to keep identity stable
+    if _extract_fm_field(spring_content, "uuid") != dst_uuid:
+        merged = re.sub(
+            r'^uuid:.*$',
+            f'uuid: "{dst_uuid}"',
+            merged,
+            count=1,
+            flags=re.MULTILINE,
+        )
+    merged = _bump_date_updated(merged, today)
+    merged = _clear_enriched_at(merged)
+    merged = _finalize_md(merged)  # refresh content_hash
+
+    if not dry_run:
+        dst.write_text(merged, encoding="utf-8")
+        # Record EVERY spring turn (insert-or-ignore preserves prior rows)
+        record_turns([
+            {
+                "turn_hash":   t.hash,
+                "memory_uuid": dst_uuid,
+                "memory_path": rel_path,
+                "turn_index":  t.index,
+                "source":      "gemini",
+            }
+            for t in spring_turns
+        ])
+        # Schedule chunk refresh — vectorize reads this list on next run
+        _mark_dirty_for_vectorize(rel_path)
+
+    try:
+        display = dst.relative_to(ROOT)
+    except ValueError:
+        display = dst
+    print(f"    ✦ Updated {display} (+{len(new_turns)}/{len(spring_turns)} turns)")
+    return IngestResult(
+        action="updated", dst=dst,
+        note=f"+{len(new_turns)} new turns of {len(spring_turns)} total",
+    )
+
+
+def _dirty_marker_path() -> Path:
+    """Where the 'these paths need vectorize refresh' list lives."""
+    return artifact_path("dirty_paths")
+
+
+def _mark_dirty_for_vectorize(rel_path: str) -> None:
+    """Append rel_path to the dirty list (deduplicated on next read)."""
+    marker = _dirty_marker_path()
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        existing: set[str] = set()
+        if marker.exists():
+            existing = {ln.strip() for ln in marker.read_text(encoding="utf-8").splitlines() if ln.strip()}
+        existing.add(rel_path)
+        marker.write_text("\n".join(sorted(existing)) + "\n", encoding="utf-8")
+    except OSError:
+        # Non-fatal — vectorize will still re-embed, just may leave a
+        # stale chunk or two until the next full --rebuild.
+        pass
+
+
+def _finalize_md(content: str) -> str:
+    """
+    Ensure content_hash in frontmatter reflects the current body.
+    Idempotent — recomputes hash before writing so re-saves stay accurate.
+    """
+    from memosyne.content_hash import body_hash
+    h = body_hash(content)
+    if content.startswith("---"):
+        return _inject_or_replace_content_hash(content, h)
+    return content
+
+
+def route_pages(path: Path, dry_run: bool) -> IngestResult:
+    """提取 .pages 文字 → 30_Journal/{year}/"""
+    try:
+        text = extract_pages_text(path)
+    except PagesExtractionError as e:
+        print(f"    ✗ The Oracle faltered for: {path.name} — {e}", file=sys.stderr)
+        print(f"      The fragment stays in the Spring; nothing was inscribed.", file=sys.stderr)
+        return IngestResult(action="faltered", dst=None, note=str(e))
+
+    date_str, year = _infer_date(path.stem)
+    out_dir  = JOURNAL_DST / year
+    dst_name = re.sub(r'\.pages$', '.md', path.name, flags=re.IGNORECASE)
+    dst      = out_dir / dst_name
+
+    uid           = hashlib.md5(path.name.encode()).hexdigest()[:12]
+    summary       = _summary(text)
+    tags          = _journal_tags(text)
+    fname_hint    = extract_filename_hint(path.stem)
+    fname_hint_js = json.dumps(fname_hint, ensure_ascii=False)
+    md = (
+        f'---\nuuid: "{uid}"\ntitle: "手札 {date_str}"\n'
+        f'date_created: {date_str}\ndate_updated: {date_str}\n'
+        f'type: "note"\nsource: "pages"\n'
+        f'tags: {json.dumps(tags, ensure_ascii=False)}\n'
+        f'filename_hint: {fname_hint_js}\n'
+        f'related_entities: []\nsummary: "{summary}"\n---\n\n{text}\n'
+    )
+    md = _finalize_md(md)
+
+    if dst.exists():
+        verdict, sh, dh = _classify_against_dst(md, dst)
+        if verdict == "same":
+            _oracle_say("This memory already rests in the vault. Its echo endures.", indent=True)
+            return IngestResult(action="skipped_same", dst=dst)
+        _warn_conflict(path, dst, sh, dh)
+        return IngestResult(action="conflict", dst=dst, note="pages body diverged")
+
+    if not dry_run:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        dst.write_text(md, encoding="utf-8")
+    try:
+        _disp = dst.relative_to(ROOT)
+    except ValueError:
+        _disp = dst
+    print(f"    ✦ Inscribed to {_disp}")
+    return IngestResult(action="inserted", dst=dst)
+
+
+def route_gemini(path: Path, dry_run: bool) -> IngestResult:
+    """
+    Gemini .md → 20_AI_Chats/Gemini/
+
+    Three paths:
+      1. dst doesn't exist          → insert + record turns to ledger
+      2. dst exists, bodies match   → skipped_same
+      3. dst exists, bodies differ  → turn-aware update (Phase 1)
+         - parse spring turns, diff against ledger
+         - if 0 new turns: skipped_same (rare; usually means content
+           differs only in formatting)
+         - if >0 new turns: merge, preserve uuid, bump date_updated,
+           clear enriched_at, mark dirty for vectorize refresh
+         - if format unparseable: fall back to file-level conflict warn
+    """
+    dst = AI_CHAT_DST / path.name
+    # Hint when the filename looks like a Gemini export but lacks the
+    # conversation-hash suffix the official export uses. Without the hash,
+    # the same thread re-exported can't be dedup'd by filename (the v0.6
+    # turn-aware update path falls back to content_hash, but only after a
+    # full re-parse). Tell the user how to fix it cleanly.
+    if not re.search(r'_[0-9a-f]{8,16}\.md$', path.name):
+        print(f"    ⚠  '{path.name}' lacks the _<convhash> filename suffix.")
+        print(f"       Gemini exports usually have it. Without it, this thread")
+        print(f"       can't be matched to its existing vault copy on next import.")
+        print(f"       Fix: rename to '<original>_<dirhash>.md' before ingest")
+        print(f"            (the dirhash is the suffix on the export folder name).")
+
+    content = path.read_text(encoding="utf-8", errors="ignore")
+    if not content.strip().startswith("---"):
+        content = _add_gemini_frontmatter(content, path.name)
+    content = _finalize_md(content)
+
+    if dst.exists():
+        verdict, sh, dh = _classify_against_dst(content, dst)
+        if verdict == "same":
+            _oracle_say("This memory already rests in the vault. Its echo endures.", indent=True)
+            return IngestResult(action="skipped_same", dst=dst)
+
+        # Try turn-aware update before falling back to conflict warning
+        dst_content = dst.read_text(encoding="utf-8", errors="ignore")
+        update_result = _try_turn_aware_gemini_update(content, dst, dst_content, dry_run)
+        if update_result is not None:
+            # For first-time updates we record prior turns inside the helper;
+            # also record on insert below so all paths populate the ledger.
+            return update_result
+
+        # Format unparseable / uuid missing — file-level conflict warn
+        _warn_conflict(path, dst, sh, dh)
+        return IngestResult(action="conflict", dst=dst,
+                            note="gemini body diverged but turn parsing failed")
+
+    # Fresh insert
+    if not dry_run:
+        AI_CHAT_DST.mkdir(parents=True, exist_ok=True)
+        dst.write_text(content, encoding="utf-8")
+        # Seed the ledger with this conversation's turns so future
+        # updates can do incremental diff cleanly.
+        try:
+            from memosyne.turns import GeminiParser
+            from memosyne.turn_ledger import record_turns
+            parser = GeminiParser()
+            turns_list = parser.split_turns(content)
+            uuid = _extract_fm_field(content, "uuid")
+            if uuid and turns_list:
+                rel = str(dst.relative_to(BRAIN_DB))
+                record_turns([
+                    {
+                        "turn_hash":   t.hash,
+                        "memory_uuid": uuid,
+                        "memory_path": rel,
+                        "turn_index":  t.index,
+                        "source":      "gemini",
+                    }
+                    for t in turns_list
+                ])
+        except ImportError:
+            pass
+    try:
+        _disp = dst.relative_to(ROOT)
+    except ValueError:
+        _disp = dst
+    print(f"    ✦ Inscribed to {_disp}")
+    return IngestResult(action="inserted", dst=dst)
+
+
+def _try_turn_aware_journal_update(
+    spring_content: str,
+    dst: Path,
+    dst_content: str,
+    dry_run: bool,
+) -> IngestResult | None:
+    """
+    v0.6 Phase 2: turn-aware path for journal files that use day headings.
+    Same shape as the Gemini variant but routes through JournalAppendParser.
+    Returns None for journals without ≥2 day headings (caller falls back
+    to file-level handling).
+    """
+    try:
+        from memosyne.turns import JournalAppendParser, diff_against_known
+        from memosyne.turn_ledger import known_turn_hashes, record_turns
+    except ImportError:
+        return None
+
+    parser = JournalAppendParser()
+    if not parser.can_parse(spring_content):
+        return None
+    spring_turns = parser.split_turns(spring_content)
+    if not spring_turns:
+        return None
+
+    dst_uuid = _extract_fm_field(dst_content, "uuid")
+    if not dst_uuid:
+        return None
+    rel_path = str(dst.relative_to(BRAIN_DB)) if dst.is_absolute() else str(dst)
+
+    known = known_turn_hashes(memory_uuid=dst_uuid)
+    if not known:
+        prior = parser.split_turns(dst_content)
+        if prior:
+            if not dry_run:
+                record_turns([
+                    {"turn_hash": t.hash, "memory_uuid": dst_uuid,
+                     "memory_path": rel_path, "turn_index": t.index,
+                     "source": "journal_append"}
+                    for t in prior
+                ], enriched=True, embedded=True)
+            known = {t.hash for t in prior}
+
+    new_turns = diff_against_known(spring_turns, known)
+    if not new_turns:
+        return IngestResult(action="skipped_same", dst=dst,
+                            note="all days already in ledger")
+
+    from datetime import datetime as _dt
+    today = _dt.now().strftime("%Y-%m-%d")
+    merged = spring_content
+    if _extract_fm_field(spring_content, "uuid") != dst_uuid:
+        merged = re.sub(r'^uuid:.*$', f'uuid: "{dst_uuid}"', merged,
+                        count=1, flags=re.MULTILINE)
+    merged = _bump_date_updated(merged, today)
+    merged = _clear_enriched_at(merged)
+    merged = _finalize_md(merged)
+
+    if not dry_run:
+        dst.write_text(merged, encoding="utf-8")
+        record_turns([
+            {"turn_hash": t.hash, "memory_uuid": dst_uuid,
+             "memory_path": rel_path, "turn_index": t.index,
+             "source": "journal_append"}
+            for t in spring_turns
+        ])
+        _mark_dirty_for_vectorize(rel_path)
+
+    try:
+        display = dst.relative_to(ROOT)
+    except ValueError:
+        display = dst
+    print(f"    ✦ Updated {display} (+{len(new_turns)}/{len(spring_turns)} days)")
+    return IngestResult(action="updated", dst=dst,
+                        note=f"+{len(new_turns)} new days of {len(spring_turns)} total")
+
+
+def route_journal(path: Path, dry_run: bool) -> IngestResult:
+    """
+    一般 .md/.txt 日記 → 30_Journal/{year}/
+
+    v0.6 Phase 2: if the journal uses ## YYYY-MM-DD day headings, route
+    re-imports through the day-level turn-aware update path so appending
+    a new day doesn't trigger a conflict.
+    """
+    date_str, year = _infer_date(path.stem)
+    out_dir  = JOURNAL_DST / year
+    dst_name = path.stem + ".md"
+    dst      = out_dir / dst_name
+
+    content = path.read_text(encoding="utf-8", errors="ignore")
+    if not content.strip().startswith("---"):
+        uid           = hashlib.md5(path.name.encode()).hexdigest()[:12]
+        summary       = _summary(content)
+        tags          = _journal_tags(content)
+        fname_hint    = extract_filename_hint(path.stem)
+        fname_hint_js = json.dumps(fname_hint, ensure_ascii=False)
+        front   = (
+            f'---\nuuid: "{uid}"\ntitle: "手札 {date_str}"\n'
+            f'date_created: {date_str}\ndate_updated: {date_str}\n'
+            f'type: "note"\nsource: "manual"\n'
+            f'tags: {json.dumps(tags, ensure_ascii=False)}\n'
+            f'filename_hint: {fname_hint_js}\n'
+            f'related_entities: []\nsummary: "{summary}"\n---\n\n'
+        )
+        content = front + content
+    content = _finalize_md(content)
+
+    if dst.exists():
+        verdict, sh, dh = _classify_against_dst(content, dst)
+        if verdict == "same":
+            _oracle_say("This memory already rests in the vault. Its echo endures.", indent=True)
+            return IngestResult(action="skipped_same", dst=dst)
+
+        dst_content = dst.read_text(encoding="utf-8", errors="ignore")
+        update_result = _try_turn_aware_journal_update(content, dst, dst_content, dry_run)
+        if update_result is not None:
+            return update_result
+
+        _warn_conflict(path, dst, sh, dh)
+        return IngestResult(action="conflict", dst=dst, note="journal body diverged")
+
+    if not dry_run:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        dst.write_text(content, encoding="utf-8")
+    try:
+        _disp = dst.relative_to(ROOT)
+    except ValueError:
+        _disp = dst
+    print(f"    ✦ Inscribed to {_disp}")
+    return IngestResult(action="inserted", dst=dst)
+
+
+def route_knowledge(path: Path, dry_run: bool) -> IngestResult:
+    """知識筆記 .md → 50_Knowledge/"""
+    dst = KNOWLEDGE_DST / path.name
+    content = path.read_text(encoding="utf-8", errors="ignore")
+    content = _finalize_md(content)
+
+    if dst.exists():
+        verdict, sh, dh = _classify_against_dst(content, dst)
+        if verdict == "same":
+            _oracle_say("This memory already rests in the vault. Its echo endures.", indent=True)
+            return IngestResult(action="skipped_same", dst=dst)
+        _warn_conflict(path, dst, sh, dh)
+        return IngestResult(action="conflict", dst=dst, note="knowledge body diverged")
+
+    if not dry_run:
+        KNOWLEDGE_DST.mkdir(parents=True, exist_ok=True)
+        dst.write_text(content, encoding="utf-8")
+    try:
+        _disp = dst.relative_to(ROOT)
+    except ValueError:
+        _disp = dst
+    print(f"    ✦ Inscribed to {_disp}")
+    return IngestResult(action="inserted", dst=dst)
+
+# ─── 後處理：The Weaving + The Inscription ───────────────────
+
+def run_enrich(new_files: list, model: str):
+    """The Weaving — Oracle 提取記憶精華"""
+    print(f"\n  ✦ The Weaving begins. The Oracle reads {len(new_files)} memory fragment(s)...")
+    for f in new_files:
+        rel = str(f.relative_to(BRAIN_DB))
+        print(f"    ⟶  {rel}")
+        result = subprocess.run(
+            [sys.executable, "-m", "memosyne.enrich", "--file", rel, "--model", model],
+        )
+        if result.returncode != 0:
+            print(f"    [WARN] The Oracle faltered for: {rel}")
+
+def backfill_filename_hints(dry_run: bool = False) -> int:
+    """
+    掃描 Vault 所有記憶檔，補寫 filename_hint 欄位。
+    已有 filename_hint 的檔案跳過。
+    回傳補寫的檔案數量。
+    """
+    updated = 0
+
+    targets  = list(iter_memory_files(BRAIN_DB))
+
+    print(f"\n  Scanning {len(targets)} memory files for filename hints...")
+
+    for path in targets:
+        content = path.read_text(encoding="utf-8")
+        if not content.startswith("---"):
+            continue
+
+        # 已有 filename_hint 就跳過
+        end = content.find("\n---", 3)
+        fm_block = content[3:end] if end > 0 else content[3:500]
+        if "filename_hint" in fm_block:
+            continue
+
+        hint = extract_filename_hint(path.stem)
+        hint_js = json.dumps(hint, ensure_ascii=False)
+
+        if not dry_run:
+            # 在第一個 --- 結尾前插入 filename_hint
+            insert_pos = end  # 在 \n--- 前插入
+            new_content = (
+                content[:insert_pos]
+                + f"\nfilename_hint: {hint_js}"
+                + content[insert_pos:]
+            )
+            path.write_text(new_content, encoding="utf-8")
+
+        hint_display = ", ".join(hint) if hint else "（純日期）"
+        print(f"    ✦ {path.relative_to(BRAIN_DB)}  →  [{hint_display}]")
+        updated += 1
+
+    return updated
+
+def run_vectorize(rebuild: bool = False):
+    """The Inscription — 向量化銘刻"""
+    mode = "rebuilding the eternal index" if rebuild else "updating the index"
+    print(f"\n  ✦ The Inscription begins — {mode}...")
+    flag = "--rebuild" if rebuild else ""
+    cmd  = [sys.executable, "-m", "memosyne.retrieval"] + ([flag] if flag else [])
+    subprocess.run(cmd)
+
+# ─── 主流程 ─────────────────────────────────────────────────
+
+def scan_spring() -> list:
+    """掃描 spring/ 下的可處理檔案"""
+    files = []
+    for p in sorted(SPRING_DIR.iterdir()):
+        if p.name.startswith("_") or p.name.startswith("."):
+            continue
+        if p.name in SKIP_NAMES:
+            continue
+        if p.is_file() and p.suffix.lower() in (".pages", ".md", ".txt"):
+            files.append(p)
+    return files
+
+def archive_to_processed(path: Path, dry_run: bool):
+    """入庫完成後，將原始檔案歸檔至 _processed/YYYY-MM/"""
+    month_dir = PROCESSED / datetime.now().strftime("%Y-%m")
+    if not dry_run:
+        month_dir.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(path), str(month_dir / path.name))
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Memosyne — The Spring Ritual"
+    )
+    parser.add_argument("--dry-run",   action="store_true", help="預覽模式，不執行任何寫入")
+    parser.add_argument("--no-enrich", action="store_true", help="跳過 The Weaving（Enrichment）")
+    parser.add_argument("--no-index",  action="store_true", help="跳過 The Inscription（向量索引）")
+    parser.add_argument("--rebuild",   action="store_true", help="完整重建索引（非增量）")
+    parser.add_argument("--model",     default="deepseek:deepseek-flash",
+                        help="Oracle 使用的 LLM 模型（預設 deepseek:deepseek-flash，"
+                             "enrich 會自動以本地 gemma4:26b 保底）")
+    parser.add_argument("--backfill",       action="store_true",
+                        help="補寫所有既有記憶的 filename_hint，然後重建索引")
+    parser.add_argument("--weave-tapestry", action="store_true",
+                        help="從現有已增強記憶重建 Tapestry 圖（不重新 enrich）")
+    args = parser.parse_args()
+
+    # ── 啟動橫幅 ────────────────────────────────────────────
+    print()
+    print("  ╔══════════════════════════════════════════════════════╗")
+    print("  ║  ✦  M E M O S Y N E  —  The Spring Ritual  ✦        ║")
+    print("  ║  Nothing shall be lost to the River Lethe.          ║")
+    print("  ╚══════════════════════════════════════════════════════╝")
+    print()
+
+    # ── Weave Tapestry 模式（獨立流程）────────────────────
+    if args.weave_tapestry:
+        print("  ── Weave Tapestry: Rebuilding graph from enriched memories ──")
+        from memosyne.labs.graph import backfill_from_vault
+        backfill_from_vault(verbose=True)
+        print()
+        print("  🌊  The Tapestry has been rewoven. All entity threads restored.")
+        print()
+        return
+
+    # ── Backfill 模式（獨立流程）──────────────────────────
+    if args.backfill:
+        print("  ── Backfill: Writing filename hints to existing memories ──")
+        if args.dry_run:
+            print("  ⚠  Dry-run mode — no memory shall be written.\n")
+        n = backfill_filename_hints(dry_run=args.dry_run)
+        if not args.dry_run:
+            print(f"\n  ✦ {n} files updated with filename hints.")
+            print("\n  ── Rebuilding the eternal index ───────────────────────")
+            run_vectorize(rebuild=True)
+            print()
+            print("  🌊  The tapestry has been rewoven. All filename echoes inscribed.")
+        else:
+            print(f"\n  (dry-run) {n} files would receive filename hints.")
+        print()
+        return
+
+    if not SPRING_DIR.exists():
+        print(f"  [ERROR] The Spring has not been found: {SPRING_DIR}")
+        sys.exit(1)
+
+    files = scan_spring()
+    if not files:
+        print("  The Spring is still. No fragments await the Oracle.\n")
+        return
+
+    print(f"  The Spring stirs... {len(files)} fragment(s) await the Oracle's discernment.")
+    if args.dry_run:
+        print("  ⚠  Dry-run mode — no memory shall be written.\n")
+
+    routers = {
+        "pages":     route_pages,
+        "gemini":    route_gemini,
+        "journal":   route_journal,
+        "knowledge": route_knowledge,
+    }
+
+    new_files: list = []
+    faltered:  list = []
+
+    # ── The Discernment ────────────────────────────────────
+    print(f"\n  ── I. The Discernment ─────────────────────────────────")
+    for f in files:
+        ftype  = detect_type(f)
+        muse   = MUSES.get(ftype, ("Unknown", "Unknown Realm", "?"))
+        print(f"\n  ⟶  {f.name}")
+        print(f"     {muse[0]}, {muse[1]}, claims this fragment.")
+
+        router = routers.get(ftype)
+        if router is None:
+            print(f"     The Muses know not this form ({f.suffix}). It is returned.")
+            continue
+
+        result = router(f, dry_run=args.dry_run)
+        if result.action == "faltered":
+            faltered.append(f)
+        if not args.dry_run:
+            if result.needs_followup and result.dst and result.dst.exists():
+                new_files.append(result.dst)
+            if result.should_archive:
+                archive_to_processed(f, dry_run=args.dry_run)
+            elif result.action == "conflict":
+                # Leave spring original in place so the user can decide
+                # what to do (see _warn_conflict output above).
+                pass
+
+    if not new_files:
+        if not faltered:
+            print("\n  All fragments were already known to the vault.")
+            print("  The waters grow still.\n")
+        _report_faltered(faltered)
+        return
+
+    # ── The Weaving ────────────────────────────────────────
+    if not args.no_enrich and not args.dry_run:
+        print(f"\n  ── II. The Weaving ────────────────────────────────────")
+        run_enrich(new_files, model=args.model)
+
+    # ── The Inscription ────────────────────────────────────
+    if not args.no_index and not args.dry_run:
+        print(f"\n  ── III. The Inscription ───────────────────────────────")
+        run_vectorize(rebuild=args.rebuild)
+
+    # ── The Digest（deterministic；無 LLM、無索引）──────────
+    if not args.dry_run:
+        try:
+            from memosyne import digest
+            digest.build()
+            print("\n  ✦ The digest is renewed (timeline + entity index).")
+        except Exception as exc:  # the digest is a convenience; never fail ingest
+            print(f"\n  [WARN] The digest could not be renewed: {exc}")
+
+    # ── 完成 ───────────────────────────────────────────────
+    print()
+    print(f"  🌊  {len(new_files)} memory fragment(s) have found their eternal place.")
+    print(f"      The tapestry of Memosyne grows richer.")
+    print()
+    _report_faltered(faltered)
+
+def _report_faltered(faltered: list):
+    """Make extraction failures impossible to miss: list them and exit 1."""
+    if not faltered:
+        return
+    print(f"  ✗ The Oracle faltered for {len(faltered)} fragment(s); they remain in the Spring:",
+          file=sys.stderr)
+    for f in faltered:
+        print(f"      • {f.name}", file=sys.stderr)
+    print(file=sys.stderr)
+    sys.exit(1)
+
+# ─── 輔助函式 ────────────────────────────────────────────────
+
+def _oracle_say(msg: str, indent: bool = False):
+    prefix = "     " if indent else "  "
+    print(f"{prefix}Oracle: \"{msg}\"")
+
+def _infer_date(stem: str) -> tuple:
+    m = re.match(r'^(\d{6})', stem)
+    if m:
+        yy, mm, dd = stem[0:2], stem[2:4], stem[4:6]
+        year = int('20' + yy)
+        return f'{year}-{mm}-{dd}', str(year)
+    m2 = re.match(r'^(\d{4})-(\d{2})-(\d{2})', stem)
+    if m2:
+        return m2.group(0), m2.group(1)
+    now = datetime.now()
+    return now.strftime('%Y-%m-%d'), str(now.year)
+
+def _summary(text: str, max_chars: int = 150) -> str:
+    lines = [l.strip() for l in text.split('\n')
+             if l.strip() and not l.startswith('#') and not l.startswith('>') and len(l.strip()) > 10]
+    return ' '.join(lines[:3])[:max_chars].replace('"', "'").replace('\n', ' ')
+
+# Generic starter vocabulary for journal auto-tags. Personal words (names of
+# people, pets, home towns, employers…) do not belong in code: put them in
+# `<vault>/tags.yaml`, which overrides or extends these per tag.
+DEFAULT_TAG_KEYWORDS = {
+    "職涯": ["工作", "離職", "跳槽", "公司", "求職"],
+    "感情": ["感情", "遠距"],
+    "寵物": ["貓", "狗", "寵物"],
+    "旅行": ["旅行", "機場", "飛機", "行程"],
+    "自省": ["反思", "手札", "自省", "成長"],
+}
+TAG_KEYWORDS_FILE = "tags.yaml"
+
+
+def _tag_keywords() -> dict:
+    """Defaults merged with the vault's own `tags.yaml` (tag → list of keywords).
+
+    A tag listed in the vault file replaces the default list for that tag;
+    an empty list switches the tag off.
+    """
+    keywords = {tag: list(words) for tag, words in DEFAULT_TAG_KEYWORDS.items()}
+    custom = BRAIN_DB / TAG_KEYWORDS_FILE
+    if custom.exists():
+        try:
+            import yaml
+            data = yaml.safe_load(custom.read_text(encoding="utf-8")) or {}
+        except Exception as exc:
+            print(f"    [WARN] {custom.name} could not be read ({exc}); using default tags.")
+            data = {}
+        if isinstance(data, dict):
+            for tag, words in data.items():
+                if isinstance(words, list):
+                    keywords[str(tag)] = [str(w) for w in words]
+    return keywords
+
+
+def _journal_tags(text: str) -> list:
+    return [tag for tag, words in _tag_keywords().items()
+            if words and any(w in text for w in words)][:5]
+
+def _add_gemini_frontmatter(content: str, filename: str) -> str:
+    stem = Path(filename).stem
+    title = re.sub(r'_[0-9a-f]{8,}$', '', stem).strip() or stem
+    m = re.search(r'備份時間：\s*(\d{4}/\d{2}/\d{2})', content)
+    date = m.group(1).replace('/', '-') if m else datetime.now().strftime('%Y-%m-%d')
+    uid = hashlib.md5(filename.encode()).hexdigest()[:12]
+    summary = _summary(content)
+    front = (
+        f'---\nuuid: "{uid}"\ntitle: "{title}"\n'
+        f'date_created: {date}\ndate_updated: {date}\n'
+        f'type: "chat"\nsource: "gemini"\n'
+        f'tags: []\nrelated_entities: []\nsummary: "{summary}"\n---\n\n'
+    )
+    return front + content
+
+if __name__ == "__main__":
+    main()
