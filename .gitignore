@@ -1,95 +1,45 @@
-# ══════════════════════════════════════════
-#  秘鑰與憑證（絕對不進 git）
-# ══════════════════════════════════════════
+# ── Secrets (never commit) ───────────────────────────────────
+.env
+.env.*
+!.env.example
+*.key
 openrouter-key
 openrouter.py
 ANTHROPIC_API_KEY
-*.key
-.env
 
-# Local agent/developer overrides (private machine-specific instructions)
-AGENTS.local.md
-CLAUDE.local.md
+# Private per-machine overrides and block-lists
 *.local.md
-.env.*
-
-# Vigil of Invariants — private allow-list for check_no_private_names
-# (sample_vault/_synthetic_entities.txt is the PUBLIC whitelist and should
-#  be committed; .private_terms is the per-machine private blocklist)
 .private_terms
 
-# ══════════════════════════════════════════
-#  個人記憶 — 2026-04-23 起改由 Personal_Brain_DB/_vault submodule 追蹤
-#  原路徑 10_Profile ~ 50_Knowledge 現為 symlink 指向 _vault/，主 repo 只記 symlink
-# ══════════════════════════════════════════
-
-# ── 原始資料來源 ──
-gemini\ chat/
-notes/
-個人記憶開發文檔.md
-
-# ── spring/ 記憶之泉（原始檔案與已處理歸檔不進 git）──
-spring/_processed/
-# 個人檔案不追蹤，但 README.md 和 .gitkeep 保留
-spring/*.pages
-spring/*.txt
-spring/*.md
-!spring/README.md
-
-# ══════════════════════════════════════════
-#  系統生成／大型二進位（不 commit）
-# ══════════════════════════════════════════
-
-# 向量資料庫
-Personal_Brain_DB/00_System/chroma_db/
-
-# Aletheia 私有狀態（log + snapshot + reembed queue）
-Personal_Brain_DB/00_System/aletheia_log.jsonl
-Personal_Brain_DB/00_System/ordeal_log.jsonl
-Personal_Brain_DB/00_System/naming_log.jsonl
-Personal_Brain_DB/00_System/dirty_paths.txt
-Personal_Brain_DB/00_System/aletheia_backup/
-Personal_Brain_DB/00_System/aletheia_pending_reembed.json
-
-# Augury golden_set — 包含真實查詢，保留私有
-Personal_Brain_DB/00_System/benchmark/golden_set.yaml
-
-# FlashRank / HuggingFace 模型快取
-Personal_Brain_DB/00_System/flashrank_cache/
-
-# 以下檔案 2026-04-23 後改由 _vault submodule 管理；00_System/ 下保留 symlink 作為 shim
-# （symlink 本身會被追蹤，指向 ../_vault/；私有內容在 private repo）
-# - index.json, bm25_index.pkl, muse_centroids.json（索引 / centroid）
-# - tapestry.json, tapestry_db（圖譜）
-# - hyqe_cache.json, contextual_cache.json（LLM 產出快取）
-# - chronicle.db（存取紀錄）
-# - augury_reports/（Augury 審計）
-# - benchmark/reports/（Eternal Mirror 評估報告）
-
-# ══════════════════════════════════════════
-#  Python 暫存
-# ══════════════════════════════════════════
-**/__pycache__/
-**/*.pyc
-**/*.pyo
-.Python
-*.egg-info/
-
-# Educational long-form material kept local until reviewed for public release
+# ── Your memories (never commit to this repository) ──────────
+# The vault is yours: keep it outside the repo, or in a private one.
+/vault/
+/Personal_Brain_DB/
+/spring/*
+!/spring/README.md
+!/spring/_processed/
+/spring/_processed/*
+!/spring/_processed/.gitkeep
+/_internal/
 docs/learning/
 
-# ══════════════════════════════════════════
-#  系統雜項
-# ══════════════════════════════════════════
-.DS_Store
-.AppleDouble
-**/.DS_Store
-.claude/
-/_internal/
-**/.cursorrules
-.env
-
-# Sample vault derived artifacts (rebuilt from sample sources, never committed)
+# ── Sample vault: only the synthetic sources are tracked ─────
 sample_vault/_artifacts/
-sample_vault/_eval/toggle_reports/*.txt
+sample_vault/_digest/
 sample_vault/chroma_db/
+sample_vault/*.pkl
+sample_vault/_eval/toggle_reports/*.txt
+
+# ── Python ───────────────────────────────────────────────────
+__pycache__/
+*.py[co]
+*.egg-info/
+.venv/
+build/
+dist/
+.pytest_cache/
+
+# ── Misc ─────────────────────────────────────────────────────
+.DS_Store
+.claude/
+**/.cursorrules

@@ -49,9 +49,9 @@ if [[ -f "$whitelist" ]]; then
     extracted=$(python3 - <<EOF 2>/dev/null || true
 import sys, json
 from pathlib import Path
-sys.path.insert(0, "Personal_Brain_DB/00_System")
+sys.path.insert(0, "src")
 try:
-    from link_extractor import extract_from_vault
+    from memosyne.link_extractor import extract_from_vault
     res = extract_from_vault(Path("$SAMPLE_DIR"))
     ents = set()
     for ext in res.values():

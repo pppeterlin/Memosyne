@@ -1,46 +1,63 @@
-# Memosyne — top-level developer entry points.
+# Memosyne — developer entry points.
 #
-# Most engineering happens through `memosyne` (the CLI). The Makefile
-# only wraps a few cross-cutting workflows that don't fit a single
-# subcommand: verification, sample bring-up, packaging hygiene.
-#
-# Verification policy: `make verify` must be green before tagging a
-# release. CI runs the same target so local + remote stay aligned.
+# Day-to-day use goes through the `memosyne` CLI. The Makefile only wraps
+# cross-cutting workflows: verification, the sample vault, evaluation, release.
 
-.PHONY: help verify verify-staged sample-rebuild sample-eval mcp-smoke clean-build release release-dry release-notes
+PYTHON ?= python3
+SAMPLE_ENV = MEMOSYNE_VAULT_DIR=$(CURDIR)/sample_vault MEMOSYNE_ARTIFACT_DIR=$(CURDIR)/sample_vault/_artifacts
+
+.PHONY: help verify verify-staged test sample-rebuild sample-eval mcp-smoke \
+        eval eval-full eval-ci clean-build release release-dry release-notes
 
 help:
 	@echo "Memosyne — make targets"
 	@echo ""
-	@echo "  verify           Run all invariants + unit tests"
-	@echo "  verify-staged    Same, but only inspect staged diff for path checks"
-	@echo "  sample-rebuild   Rebuild retrieval indexes against sample_vault/"
-	@echo "  sample-eval      Run memosyne eval --sample"
-	@echo "  mcp-smoke        Run offline MCP stdio smoke test"
-	@echo "  clean-build      Remove egg-info / dist / build artifacts"
+	@echo "  verify           Static invariants + unit tests (core install is enough)"
+	@echo "  verify-staged    Same, but path checks only inspect the staged diff"
+	@echo "  test             Unit tests only"
+	@echo "  sample-rebuild   Rebuild every index for sample_vault/"
+	@echo "  sample-eval      Golden-set evaluation against sample_vault/"
+	@echo "  mcp-smoke        Offline MCP stdio smoke test against sample_vault/"
+	@echo ""
+	@echo "Evaluation on your own vault (needs the search extra):"
+	@echo "  eval             Default search path (core profile), N=500, hygiene"
+	@echo "  eval-full        Full labs stack, same sample — compare with eval"
+	@echo "  eval-ci          eval + exit 1 on regression against the last report"
 	@echo ""
 	@echo "Release:"
-	@echo "  release VERSION=0.7.0       Bump pyproject + commit + tag (preflight gated)"
-	@echo "  release-dry VERSION=0.7.0   Dry-run; show what release would do"
-	@echo "  release-notes VERSION=0.7.0 Regenerate the draft notes only"
+	@echo "  release VERSION=1.5.0       Verify, tag, draft notes"
+	@echo "  release-dry VERSION=1.5.0   Show what release would do"
+	@echo "  clean-build                 Remove build artifacts"
 
 verify:
-	@bash scripts/verify.sh
+	@PYTHON=$(PYTHON) bash scripts/verify.sh
 
 verify-staged:
-	@bash scripts/verify.sh --staged
+	@PYTHON=$(PYTHON) bash scripts/verify.sh --staged
+
+test:
+	@$(PYTHON) -m pytest tests/unit -q -p no:cacheprovider
 
 sample-rebuild:
-	@MEMOSYNE_VAULT_DIR=sample_vault python memosyne.py rebuild --rebuild
+	@$(SAMPLE_ENV) $(PYTHON) -m memosyne rebuild --full
 
 sample-eval:
-	@python memosyne.py eval --sample
+	@$(PYTHON) -m memosyne eval --sample
 
 mcp-smoke:
-	@python tests/test_mcp_smoke.py
+	@$(PYTHON) tests/test_mcp_smoke.py
+
+eval:
+	@$(PYTHON) -m memosyne.labs.retrieval_eval --config core --n 500 --hygiene --diff
+
+eval-full:
+	@$(PYTHON) -m memosyne.labs.retrieval_eval --config full --n 500 --hygiene --diff
+
+eval-ci:
+	@$(PYTHON) -m memosyne.labs.retrieval_eval --config core --n 500 --hygiene --diff --fail-on-regression
 
 clean-build:
-	@rm -rf build/ dist/ *.egg-info
+	@$(PYTHON) -c "import shutil, glob; [shutil.rmtree(p, ignore_errors=True) for p in ['build', 'dist', *glob.glob('*.egg-info'), *glob.glob('src/*.egg-info')]]"
 
 release:
 	@if [ -z "$(VERSION)" ]; then echo "✗ usage: make release VERSION=X.Y.Z"; exit 2; fi
@@ -50,8 +67,7 @@ release-dry:
 	@if [ -z "$(VERSION)" ]; then echo "✗ usage: make release-dry VERSION=X.Y.Z"; exit 2; fi
 	@bash scripts/release.sh $(VERSION) --dry-run
 
-# Regenerate just the notes draft for a tag that already exists (or HEAD).
-# Useful if you want to iterate on release notes without re-tagging.
+# Regenerate just the notes draft for a tag that already exists.
 release-notes:
 	@if [ -z "$(VERSION)" ]; then echo "✗ usage: make release-notes VERSION=X.Y.Z"; exit 2; fi
 	@prev=$$(git describe --tags --abbrev=0 v$(VERSION)^ 2>/dev/null || echo ""); \
