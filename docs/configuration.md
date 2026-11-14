@@ -1,102 +1,101 @@
-# Memosyne Configuration
+# Configuration
 
-Memosyne v0.3 still keeps most defaults in code, but the operational boundary is now explicit: use a project virtualenv, keep private machine settings out of public docs, and use environment variables for runtime overrides.
+Memosyne is configured with environment variables. Put them in
+`<home>/.env` (loaded automatically; real environment variables win) or
+export them in your shell. `.env.example` lists every one with comments.
 
-## Python Environment
-
-Use Python 3.10+ in a project-specific virtualenv:
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r Personal_Brain_DB/00_System/requirements.txt
-pip install -e .
-memosyne health
-```
-
-Do not use an unrelated system `python3` to diagnose the project. `memosyne health` reports the actual interpreter it is running under.
+Nothing needs to be set for a first run: `memosyne init` creates `spring/`
+and `vault/` next to where you run it.
 
 ## Paths
 
-Default paths are relative to the repo root:
-
-| Path | Purpose |
-|---|---|
-| `spring/` | The Spring: drop zone for incoming files |
-| `Personal_Brain_DB/00_System/` | scripts, local runtime caches, compatibility symlinks |
-| `Personal_Brain_DB/_vault/` | private vault submodule and private portable artifacts |
-| `Personal_Brain_DB/00_System/chroma_db/` | local Chroma vector cache |
-
-Artifact path overrides:
-
-| Variable | Default | Use |
+| Variable | Default | Purpose |
 |---|---|---|
-| `MEMOSYNE_VAULT_DIR` | `Personal_Brain_DB/_vault` | relocate the private vault/artifact root |
-| `MEMOSYNE_ARTIFACT_DIR` | same as vault dir | relocate generated private artifacts only |
+| `MEMOSYNE_HOME` | the source checkout, else the current directory | project directory holding `.env`, `spring/` and the default vault |
+| `MEMOSYNE_VAULT_DIR` | `<home>/vault` | where your Markdown memories live |
+| `MEMOSYNE_ARTIFACT_DIR` | `<vault>/_artifacts` | derived files: indexes, caches, logs |
+| `MEMOSYNE_SPRING_DIR` | `<home>/spring` | drop zone for files waiting to be ingested |
 
-These should usually live in a private `.env` or local shell profile, not in public docs.
+If you set only `MEMOSYNE_VAULT_DIR`, artifacts are written into the vault
+root itself (the pre-1.5 behaviour). Set `MEMOSYNE_ARTIFACT_DIR` as well to
+keep them in their own folder.
 
-## Runtime Artifacts
+The vault is yours. Keep it outside the Memosyne checkout, or in its own
+private repository — never in a public one.
 
-| Artifact | Default | Source or cache |
+## Search
+
+| Variable | Default | Purpose |
 |---|---|---|
-| `chronicle.jsonl` | `_vault/chronicle.jsonl` | append-only Chronicle source log |
-| `chronicle.db` | `_vault/chronicle.db` via `00_System` symlink | SQLite cache derived from JSONL |
-| `bm25_index.pkl` | `_vault/bm25_index.pkl` via symlink | derived retrieval index |
-| `contextual_cache.json` | `_vault/contextual_cache.json` via symlink | LLM cache |
-| `hyqe_cache.json` | `_vault/hyqe_cache.json` via symlink | LLM cache |
-| `tapestry_db/` | `_vault/tapestry_db/` via symlink | derived graph store |
-| `muse_centroids.json` | `_vault/muse_centroids.json` via symlink | derived routing data |
-| `chroma_db/` | `00_System/chroma_db/` | local runtime vector cache |
+| `MEMOSYNE_SEARCH_PROFILE` | `core` | `core` = dense (if installed) + BM25 fusion. `full` = also graph, PPR, backlink boost and ACT-R reranking from `memosyne.labs` |
+| `MEMOSYNE_SEARCH_CHATS` | `0` | `1` = include AI chat transcripts in every search. Otherwise they are searched only on request (`--include-chats`, `include_chats=True`) |
+| `MEMOSYNE_INDEX_CHATS` | `1` | `0` = leave AI chats out of the index entirely (much smaller, much faster to build); run `memosyne rebuild --full` after changing |
+| `MEMOSYNE_WALK` | `deep` | *full profile:* graph walk — `deep` (PPR), `fast` (two-pass), `off` |
+| `MEMOSYNE_BACKLINK_COEF` | `0.05` | *full profile:* backlink boost strength; `0` disables |
+| `MEMOSYNE_ACTR_ALPHA` | `0.2` | *full profile:* ACT-R rerank weight; `0` disables |
+| `MEMOSYNE_CHRONICLE_DECAY` | built-in | *full profile:* per-domain ACT-R decay overrides |
 
-Chronicle rebuild:
+## Embeddings (search extra)
 
-```bash
-memosyne chronicle --rebuild-db-from-jsonl
-```
+| Variable | Default | Purpose |
+|---|---|---|
+| `MEMOSYNE_EMBED_PROVIDER` | `local` | `local` (sentence-transformers), `ollama`, or `openai-compat` |
+| `MEMOSYNE_EMBED_MODEL` | `paraphrase-multilingual-MiniLM-L12-v2` | model name / id |
+| `MEMOSYNE_EMBED_DIM` | — | declare the dimension to catch a silent model mismatch |
+| `MEMOSYNE_EMBED_URL` | — | remote endpoint for `ollama` / `openai-compat` |
+| `MEMOSYNE_EMBED_API_KEY` | — | only for public `openai-compat` endpoints |
+| `MEMOSYNE_EMBED_DEVICE` | `auto` | local device: `auto`, `cpu`, `mps`, `cuda` |
+| `MEMOSYNE_EMBED_BATCH` / `_TIMEOUT` / `_RETRIES` | `64` / `30` / `3` | remote request tuning |
+| `MEMOSYNE_HF_OFFLINE` | `1` | use cached models without network checks; set `0` once to download |
 
-Retrieval rebuild:
+The default model truncates input at 128 tokens. For long paragraphs prefer
+a long-context model such as `BAAI/bge-m3` (`MEMOSYNE_EMBED_DIM=1024`).
+After changing the embedding model run `memosyne rebuild --full`.
 
-```bash
-memosyne rebuild
-```
+## LLM providers (enrichment)
 
-## Models
-
-| Setting | Notes |
-|---|---|
-| Embedding | A multilingual sentence-transformers model. The embedding model is the only model Memosyne ships with a hard expectation on; pick a model that matches the languages you write in. |
-| Enrichment / Contextual / HyQE / Local chat | Any locally-served LLM you choose. Memosyne does not ship a default model — pass model identifiers via script flags or set them in your local config. |
-| Cloud LLM (optional) | Any provider supported by `Personal_Brain_DB/00_System/llm_client.py`; see that file for the current list. |
-
-Memosyne does not bundle, download, or assume any specific generative LLM. The local LLM runtime (Ollama, llama.cpp, LM Studio, vLLM, …) and the model itself are the user's choice. Public defaults in this repo intentionally avoid hard-coding specific model names.
-
-## Environment Variables
+Enrichment is the only core step that calls an LLM, and it is optional
+(`memosyne ingest --no-enrich`). `memosyne providers list` shows what is
+ready.
 
 | Variable | Purpose |
 |---|---|
-| `MEMOSYNE_HF_OFFLINE` | default `1`; avoids Hugging Face network checks after embedding models are cached |
-| `LLM_PROVIDER` | optional forced provider — see `llm_client.py` for the current set |
-| `CHAT_CATEGORY_KNOWLEDGE_PENALTY` | experimental AI-chat rerank penalty; default `1.0` |
+| `DEEPSEEK_API_KEY` | DeepSeek API (default enrichment model `deepseek:deepseek-flash`) |
+| `OPENROUTER_API_KEY` | OpenRouter (`openrouter:<model>`) |
+| `PROXY_BASE_URL`, `PROXY_API_KEY` | any OpenAI-compatible endpoint (`proxy:<model>`) |
+| `OLLAMA_HOST` | local Ollama (needs `pip install -e ".[ollama]"`) |
+| `LLM_PROVIDER` | force one backend instead of resolving from the model name |
 
-Provider-specific variables (local endpoint host, cloud API keys, base URLs, etc.) depend on which backend you choose. The canonical list lives in `Personal_Brain_DB/00_System/llm_client.py` and `.env.example`. Avoid hard-coding provider-specific names in public documentation; treat them as examples, not requirements.
+Cloud providers receive the text of the memories being enriched. See
+[privacy.md](privacy.md) before enabling one.
 
-Use `.env.example` as a public template and keep real values in ignored local files.
+## MCP server
 
-## Privacy Boundary
+| Variable | Default | Purpose |
+|---|---|---|
+| `MEMOSYNE_MCP_TOOLS` | `core` | `all` also exposes the labs tools (consolidation, graph timeline, point-in-time search, corrections) |
+| `MEMOSYNE_AUTH_DB` | `~/.memosyne/tokens.sqlite` | bearer-token store for the HTTP transport |
 
-Public repo:
+## Other
 
-- generic commands
-- synthetic queries
-- sample configuration with placeholders
-- architecture and operations docs
+| Variable | Default | Purpose |
+|---|---|---|
+| `MEMOSYNE_LANG` | `en` | language of gap questions (`en`, `zh`) |
+| `MEMOSYNE_CALL_COUNT` | `3` | questions per `memosyne call` |
+| `MEMOSYNE_CAPTURE_QUERIES` | `0` | *labs:* log real queries for replay |
+| `MEMOSYNE_QUERY_SCRUB_TERMS` | — | extra terms to redact from captured queries |
 
-Private/local only:
+## Vault-side configuration
 
-- real vault content
-- actual API keys
-- machine-specific paths
-- personal virtualenv names
-- private benchmark queries
-- generated artifacts derived from private memories
+Personal vocabulary belongs in the vault, not in code:
+
+| File | Purpose |
+|---|---|
+| `<vault>/tags.yaml` | journal auto-tag keywords (`tag: [word, …]`). A tag listed here replaces the built-in list; an empty list switches it off |
+
+## Artifacts
+
+`memosyne health` lists every artifact, its path and whether it exists.
+All of them are derived and can be rebuilt from the vault, except the two
+append-only logs that record usage: `chronicle.jsonl` (access log) and
+`muse_call_ledger.jsonl` (gap-question history).

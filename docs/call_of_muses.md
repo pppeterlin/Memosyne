@@ -7,7 +7,7 @@ Most personal-memory systems are passive: they only know what you happen
 to write down. The Call of the Muses inverts this. Memosyne scans the
 Vault for what it *doesn't* know about you, and asks a few questions a
 day to fill those gaps. Answers flow through the standard Spring Ritual
-(ingest → enrich → vectorize), so they become first-class memories.
+(ingest → enrich → index), so they become first-class memories.
 
 ```
 $ memosyne call
@@ -109,7 +109,7 @@ The feature is designed to be cron-able:
 
 ```bash
 # Every evening, list today's questions in your terminal MOTD / notifier
-0 21 * * * cd ~/path/to/memosyne && python memosyne.py call --list
+0 21 * * * cd ~/path/to/memosyne && memosyne call --list
 ```
 
 Or simply make `memosyne call` part of the same routine as

@@ -4,7 +4,88 @@ All notable changes to Memosyne are recorded here. Format inspired by
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow the project's `vMAJOR.MINOR` release sequence.
 
-## [Unreleased] — v1.0 The Call of the Muses
+## v1.5.0 — The Unburdening
+
+The project goes back to its one goal: keep a person's memories as plain
+Markdown any AI agent can read. Everything that does not serve that becomes
+optional. Includes the unreleased v1.0 work below (The Call of the Muses).
+
+Upgrading an existing checkout: [docs/migration_v1.5.md](docs/migration_v1.5.md).
+
+### Changed
+
+- **A real Python package.** The code moved from `Personal_Brain_DB/00_System/`
+  to `src/memosyne/`; no more `sys.path` edits or scripts run by file path.
+  Every module runs as `python -m memosyne.<module>`.
+- **Three install layers.** `pip install -e .` is the core (ingest,
+  enrichment, digests, keyword search, MCP server — about 75 MB, no torch).
+  Dense retrieval is the `search` extra; graph, ACT-R, consolidation, audit,
+  corrections and RAG chat are the `labs` extra under `memosyne.labs`.
+- **The default search path is dense + BM25 fusion.** Graph search, PPR,
+  backlink boost, ACT-R reranking and domain routing now run only with
+  `MEMOSYNE_SEARCH_PROFILE=full`. An ablation on a real vault found the simple
+  path ranks the right journal entry first twice as often (Recall@1 0.57 vs
+  0.26) at a sixth of the latency — see `docs/evaluation.md`. The `full`
+  profile with `MEMOSYNE_SEARCH_CHATS=1` runs the same pipeline as 1.0.
+- **AI chat transcripts are searched only on request** (`--include-chats`,
+  `include_chats=True`, or `MEMOSYNE_SEARCH_CHATS=1`). `MEMOSYNE_INDEX_CHATS=0`
+  leaves them out of the index altogether.
+- **MCP exposes 9 tools by default instead of 16.** The labs tools
+  (consolidation, entity timeline, point-in-time search, corrections) need
+  `MEMOSYNE_MCP_TOOLS=all`.
+- **Module names say what the code does** (`vectorize` → `retrieval`,
+  `mneme_weight` → `access_log`, `tapestry` → `labs.graph`, …; full table in
+  `docs/architecture.md`). CLI verbs and output messages keep the mythology.
+- **The vault is no longer part of the repository tree.** The private
+  submodule and its 14 symlinks are gone; the vault location comes from
+  `MEMOSYNE_VAULT_DIR` (default `<home>/vault`). Pre-1.5 layouts are detected
+  and keep working in place.
+- Python 3.12+ is supported; the `<3.12` cap and the exact `torch` /
+  `sentence-transformers` / `transformers` pins are gone.
+
+### Added
+
+- **The Digest (`memosyne digest`, MCP `get_digest`)** — a deterministic
+  timeline and a place / person / event / period index built from memory
+  frontmatter, with no LLM and no index. For the questions top-k retrieval
+  cannot answer ("where have I been?", "what came first?").
+- **Keyword-only mode.** Without the `search` extra, indexing and search run
+  on BM25 alone; `memosyne quickstart`, the MCP smoke test and CI all pass on
+  the core install.
+- **`<vault>/tags.yaml`** — journal auto-tag vocabulary lives in the vault.
+- **`get_profile`** serves any profile file, plus `aggregates` and `reflections`.
+- **MIT `LICENSE`**, a CI workflow (core install, Python 3.10 / 3.12 / 3.13),
+  `docs/architecture.md`, `docs/migration_v1.5.md`, `docs/references.md`.
+
+### Fixed
+
+- **Fresh installs could not start the MCP server**: `mcp>=1.0` resolved to
+  the 2.x SDK, which renamed `FastMCP`. Pinned to `<2`.
+- **Non-memories were indexed as memories** — evaluation reports and loose
+  files at the vault root. Memory discovery is now one function
+  (`paths.iter_memory_files`), and incremental rebuilds prune stale chunks
+  (guarded against a mis-pointed vault).
+- **`read_file` path check** compared string prefixes and tested existence
+  before the sandbox; it now resolves first and uses a real containment test.
+- **Unit tests wrote into the real vault's artifact folder.** Tests now run
+  against an empty temporary home.
+- **Graph search ranked tied memories in arbitrary order**, so the full
+  stack returned different results for the same query from run to run (5 of
+  14 test queries on a real vault). Ties are now broken by path.
+- The BM25 index was unpickled on every query; it is now cached per process.
+- `scripts/check_no_real_paths.sh` took minutes once code was in scope
+  (one `grep` process per line); it now runs in under a second. Both privacy
+  checks cover `src/`, `tests/` and `scripts/`, not just docs.
+
+### Removed
+
+- `process_files.py`, `watch.py` (the pre-`ingest` pipeline), the `search.py`
+  REPL, `probe_mimo.py`, `backfill_chat_category.py`, `requirements.txt`,
+  `memosyne.example.toml` (never read), the `watchdog` dependency.
+- Personal vocabulary from code and examples (auto-tag keyword lists,
+  docstring samples).
+
+## v1.0 — The Call of the Muses (shipped as part of 1.5.0)
 
 The first release aimed at people other than the author. Memosyne stops
 being a passive archive: the Muses proactively interview you to fill
@@ -72,7 +153,7 @@ changes** to the retrieval engine.
 ### Changed
 
 - **`memosyne rebuild`** defaults to incremental; `--full` opt-in.
-  Pre-v0.7 it always passed `--rebuild` to vectorize.py, wiping
+  Pre-v0.7 it always passed `--rebuild` to retrieval.py, wiping
   21K+ chunks even for a single new file. Real-world ingest is
   10× faster now.
 - **vectorize progress bar** uses tqdm (or throttled print fallback)
@@ -143,7 +224,7 @@ changes** to the retrieval engine.
 - `from __future__ import annotations` added to `ingest.py` so the
   new PEP 604 / generic-tuple annotations work on Python 3.8.
 - `dirty_paths` registered as a proper artifact under
-  `Personal_Brain_DB/00_System/dirty_paths.txt`.
+  `src/memosyne/dirty_paths.txt`.
 
 ### Deferred to v0.6.1 / v0.7
 
@@ -169,7 +250,7 @@ changes** to the retrieval engine.
   pulls Memory → Entity edges from frontmatter, markdown links, and
   body shorthand. LLM enrichment retained for Entity → Entity edges
   and narrative metadata. Measured: 1454 deterministic edges vs 1431
-  LLM-built (101.6%); see `docs/v0.5_ws1_deterministic_coverage.md`.
+  LLM-built (101.6%); see `docs/history/v0.5_ws1_deterministic_coverage.md`.
 - **The Augury Replay (WS2)** — opt-in query capture
   (`MEMOSYNE_CAPTURE_QUERIES=1`) with PII scrub at write time.
   `memosyne query-log --export --since 7d > baseline.jsonl`,
@@ -191,7 +272,7 @@ changes** to the retrieval engine.
   (`aletheia_revert`) are stripped from the HTTP-exposed registry.
   stdio transport unchanged.
 - **The Codex of Skills (WS5)** — five new fat skills under
-  `Personal_Brain_DB/00_System/skills/`: `memosyne-ingest`,
+  `src/memosyne/skills/`: `memosyne-ingest`,
   `memosyne-search`, `memosyne-correction`, `memosyne-slumber`,
   `memosyne-augury`. `RESOLVER.md` maps trigger phrases (EN + ZH) and
   CLI verbs to the right skill.
@@ -199,7 +280,7 @@ changes** to the retrieval engine.
   invariant checks (no real paths / no private names / sample vault
   synthetic / unit tests). GitHub Actions runs the same target on
   every push and PR to `master`.
-- v0.6 planning doc — `docs/v0.6_accumulating_sources.md` captures
+- v0.6 planning doc — `docs/history/v0.6_accumulating_sources.md` captures
   the turn-level dedup design for sources that grow over time
   (Gemini continuations, journal append, chat exports).
 

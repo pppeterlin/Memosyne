@@ -1,8 +1,8 @@
 # Memosyne 路線圖
 
 > 範圍：v0.2 之後的所有 release 層級規劃。
-> 每個 release 有自己的 `docs/v0.X_*.md` 計畫文件；本檔做總覽。
-> v0.2-era 的細項追蹤 (`TODO_retrieval_v2.md`) 已歸檔到 `docs/archive/`。
+> 每個 release 有自己的 `docs/history/v0.X_*.md` 計畫文件；本檔做總覽。
+> v0.2-era 的細項追蹤 (`TODO_retrieval_v2.md`) 已歸檔到 `docs/history/archive/`。
 > 文檔與示例資料的隱私規範以 `AGENTS.md` 為準。
 
 ## 定位
@@ -30,12 +30,13 @@ Memosyne 是一個本地優先的個人記憶基礎設施層，供 AI Agent 透�
 | v0.5 | 規模化與自我評估 | deterministic 抽取、Augury Replay、graph walk 多策略、MCP HTTP、skills、CI invariants | 公開 |
 | v0.6 | 累積型來源 | turn-level 去重，正確處理 Gemini 續寫等增量匯入 | 公開 |
 | v0.7 | 易用性與開源體驗 | quickstart、CLI 一致性、錯誤訊息升級、文檔重組、多 provider 一鍵切換、release 工具 | 公開 |
-| v0.8 | 分散式運算 | LLM 全雲端、embedding 走遠端 GPU；providers/health 涵蓋 remote endpoint（WS4–WS6 延後，見 docs/v0.8_deferred.md） | 已交付 |
-| v1.0 | 主動式記憶累積 | The Call of the Muses：缺口分析 + 每日主動提問；答案走標準入庫管線；MCP agent 訪談介面 | 開發中 |
+| v0.8 | 分散式運算 | LLM 全雲端、embedding 走遠端 GPU；providers/health 涵蓋 remote endpoint（WS4–WS6 延後，見 docs/history/v0.8_deferred.md） | 已交付 |
+| v1.0 | 主動式記憶累積 | The Call of the Muses：缺口分析 + 每日主動提問；答案走標準入庫管線；MCP agent 訪談介面 | 隨 v1.5 發布 |
+| v1.5 | 減負（The Unburdening） | 正式 package、core / search / labs 三層、預設檢索精簡、digest、vault 移出 repo、MIT 授權、CI | 公開 |
 
 ## v0.2：檢索凍結
 
-詳細計畫：[docs/v0.2_retrieval_freeze.md](docs/v0.2_retrieval_freeze.md)
+詳細計畫：[docs/history/v0.2_retrieval_freeze.md](docs/history/v0.2_retrieval_freeze.md)
 
 目標：凍結目前檢索架構，建立可辯護、可重現的基線。
 
@@ -51,11 +52,11 @@ Memosyne 是一個本地優先的個人記憶基礎設施層，供 AI Agent 透�
 - 最新 Eternal Mirror 報告已提交或明確引用。
 - Augury golden set 已建立，且使用合成或脫敏問題。
 - `_vault` 產物變更已決定要提交或忽略。
-- 細項任務追蹤已對齊實際 repo（v0.2 era 的 TODO 見 `docs/archive/`）。
+- 細項任務追蹤已對齊實際 repo（v0.2 era 的 TODO 見 `docs/history/archive/`）。
 
 ## v0.3：使用產品化
 
-詳細計畫：[docs/v0.3_productization.md](docs/v0.3_productization.md)
+詳細計畫：[docs/history/v0.3_productization.md](docs/history/v0.3_productization.md)
 
 目標：降低日常操作摩擦。
 
@@ -75,7 +76,7 @@ Memosyne 是一個本地優先的個人記憶基礎設施層，供 AI Agent 透�
 
 ## v0.4：開源發布
 
-詳細計畫：[docs/v0.4_oss_release.md](docs/v0.4_oss_release.md)
+詳細計畫：[docs/history/v0.4_oss_release.md](docs/history/v0.4_oss_release.md)
 
 目標：讓專案可安全公開，且不需要讀者理解任何私有資料脈絡。
 
@@ -105,18 +106,15 @@ Memosyne 是一個本地優先的個人記憶基礎設施層，供 AI Agent 透�
 檢索相關變更的預設驗證：
 
 ```bash
-workon personal-memory
-cd Personal_Brain_DB/00_System
 make eval-ci
 ```
 
 操作與健康檢查相關變更的最低驗證：
 
 ```bash
-workon personal-memory
-python Personal_Brain_DB/00_System/mneme_weight.py --stats
-python Personal_Brain_DB/00_System/tapestry.py --stats
-python Personal_Brain_DB/00_System/slumber.py --stats
+memosyne chronicle --stats
+memosyne tapestry --stats
+memosyne slumber --stats
 ```
 
 ## v1.0：主動式記憶累積（The Call of the Muses）
@@ -129,7 +127,7 @@ python Personal_Brain_DB/00_System/slumber.py --stats
 
 - 缺口分析必須 deterministic（不依賴 LLM、不依賴向量索引），clean clone 即可用。
 - 五種缺口來源：空白領域、Profile 主題缺漏、單薄人物、日記空白月份、領域停滯。
-- 回答不開新管線：寫入 spring/ 走標準 ingest → enrich → vectorize。
+- 回答不開新管線：寫入 spring/ 走標準 ingest → enrich → index。
 - 冷卻 ledger 防止重複提問；answered 是終態。
 - Agent 介面走 MCP（muse_call / muse_answer），與 CLI 共用同一套選題邏輯。
 
@@ -139,17 +137,30 @@ python Personal_Brain_DB/00_System/slumber.py --stats
 - 空 vault、無 kuzu、無 LLM 的環境下功能完整降級（不報錯）。
 - 單元測試涵蓋缺口偵測、冷卻、選題決定性、回答落地。
 
+## v1.5：減負（The Unburdening）
+
+遷移說明：[docs/migration_v1.5.md](docs/migration_v1.5.md) · 架構：[docs/architecture.md](docs/architecture.md)
+
+目標：回到唯一目標——把一個人的記憶存成任何 Agent 都讀得懂的 Markdown——並讓其餘一切變成選用。
+
+關鍵決策：
+
+- Vault 是資產，其餘皆為衍生。core 只做入庫、增強、彙整、關鍵字搜尋與 MCP。
+- 檢索階段要成為預設，必須有評估證據。ablation 顯示 dense + BM25 在直接查找上優於完整堆疊，因此其餘階段移入 `memosyne.labs`（保留、opt-in）。
+- 列舉型與時間軸問題由決定性的 digest 回答，不靠檢索。
+- 程式碼用工程名；神話留在 CLI 與輸出訊息。
+- 私有 vault 不再出現在 repo 樹狀結構中。
+
 ## 目前建議優先順序
 
-v1.0 開發中（The Call of the Muses）— 主動式記憶缺口提問。
+v1.5 之後的候選方向，依「對唯一目標的幫助」排序：
 
-v1.0 之後的候選方向：
-
-1. **WS6 partial enrichment（v0.6 舊債）**：turn-aware 路徑只 enrich 新 turns（見 docs/v0.8_deferred.md）。
-
-1. **Aletheia turn-level correction**：v0.6 後記憶身分到 turn 層，correction 也該下沉。
-2. **OAuth 2.1 for MCP HTTP**：等真實有人從外部連 HTTP 後再做。
-3. **PyPI 套件化**：`pip install memosyne` 而不是 `pip install -e .`。
-4. **更多累積型 source parser**（Slack / Discord / WhatsApp）：架構已支援，等真實 fixture。
+1. **MCP SDK 2.x 遷移**：目前釘在 `mcp<2`；2.x 把 `FastMCP` 改名並調整了 API。
+2. **多跳／時近性評測集**：現有評測只量得到直接查找。要判斷 labs 的圖譜與 ACT-R 是否值得留下，需要一組人工標註、答案與問題無共同字詞的題目。沒有證據就繼續留在 labs，或移除。
+3. **替換 Kuzu**：上游已於 2025-10 封存。實體關聯在個人記憶庫的規模下用 SQLite 即可。
+4. **拆分 `retrieval.py`**：切段、索引建立、搜尋目前仍在同一個檔案。
+5. **更多來源 parser**（其他 AI 助理的匯出、通訊軟體紀錄）：架構已支援，等真實 fixture。
+6. **PyPI 套件化**：`pip install memosyne`；需要把 sample vault 與 skills 的散佈方式定下來。
+7. 舊債：turn-aware 的 partial enrichment、Aletheia turn-level correction（見 `docs/history/v0.8_deferred.md`）。
 
 每個方向值得獨立 planning doc 再開分支；不要在 master 直接動手。

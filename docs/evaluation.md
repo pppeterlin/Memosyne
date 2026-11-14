@@ -25,24 +25,88 @@ Public repo must not include:
 
 Keep private `golden_set.yaml` and private reports in ignored/private locations.
 
+## Ablation (v1.5)
+
+Before 1.5 every query ran through nine stages. To decide what the default
+should be, each stage was switched on in turn against one real personal
+vault (≈200 journal entries, ≈450 AI chat transcripts, ≈37k chunks,
+`BAAI/bge-m3` embeddings, mixed Chinese / English). Questions come from the
+Eternal Mirror pool (one LLM-written question per chunk; a hit means the
+source memory is returned), in hygiene mode, with no access recording.
+
+| Search path | Journal R@1 | R@5 | MRR | AI chats R@1 | R@5 | MRR |
+|---|---:|---:|---:|---:|---:|---:|
+| dense only | 0.46 | 0.67 | 0.55 | 0.67 | 0.83 | 0.74 |
+| BM25 only *(core install)* | 0.57 | 0.72 | 0.63 | 0.66 | 0.87 | 0.75 |
+| **dense + BM25 → RRF** *(1.5 default)* | **0.57** | **0.79** | **0.65** | **0.68** | **0.84** | **0.75** |
+| + temporal rerank | 0.54 | 0.78 | 0.63 | 0.68 | 0.84 | 0.75 |
+| + graph search | 0.38 | 0.68 | 0.52 | 0.41 | 0.82 | 0.57 |
+| + PPR spreading activation | 0.35 | 0.65 | 0.49 | 0.39 | 0.81 | 0.55 |
+| + backlink boost | 0.30 | 0.62 | 0.45 | 0.26 | 0.77 | 0.45 |
+| + ACT-R rerank | 0.28 | 0.61 | 0.43 | 0.25 | 0.73 | 0.43 |
+| + domain routing *(1.0 default)* | 0.26 | 0.60 | 0.42 | 0.21 | 0.74 | 0.41 |
+
+Journal n = 125, AI chats n = 100; each row adds one stage to the row above.
+Recall@10 stays within 0.76–0.83 (journal) and 0.84–0.91 (chats) for every
+row: the extra stages rarely lose the right memory, they push it down the
+list. Per-query latency of the 1.0 default was about 6× the 1.5 default on
+the same machine.
+
+Search scope, using the 1.5 default path:
+
+| Questions about | All memories R@5 | Life memories only R@5 |
+|---|---:|---:|
+| Journal entries (n = 125) | 0.79 | 0.79 |
+| Profile (n = 25) | 0.68 | 0.88 |
+
+Leaving AI chat transcripts out of scope costs nothing for journal
+questions and helps profile questions, so 1.5 searches life memories by
+default and chats on request.
+
+### What this does and does not show
+
+- It shows that for *direct lookups* — the question names what the memory
+  is about — fusing dense and keyword results is the best ranking measured,
+  and each further stage makes top-1 accuracy worse.
+- It does **not** measure what the graph and ACT-R stages were built for:
+  multi-hop questions whose answer shares no words with the query, and
+  recency. Generated questions are lexically close to their source, which
+  favours dense and BM25. Those stages are therefore kept, as opt-in
+  `memosyne.labs` features (`MEMOSYNE_SEARCH_PROFILE=full`), rather than
+  deleted.
+- Graph search ranked tied memories in arbitrary order before 1.5, so every
+  row that includes it varies from run to run (5 of 14 repeated queries
+  changed). That noise is part of why it hurts top-1 accuracy, and the gap
+  to the default path is far larger than the variation — but the exact
+  figures for those rows are single runs, not averages.
+- ACT-R depends on the vault's access history; on this vault that history
+  was mostly earlier evaluation runs, which is a weak signal.
+- The temporal rerank only acts when a query contains a time expression;
+  its small negative effect here (3 questions) is within noise, and it
+  stays in the default path.
+- One vault, one embedding model. Rerun it on yours before trusting it:
+
+```bash
+make eval        # core profile, N=500, hygiene
+make eval-full   # full labs stack on the same sample
+```
+
 ## Eternal Mirror
 
 Eternal Mirror samples questions from `hyqe_cache.json` and checks whether retrieval returns the source memory path.
 
-Run from `Personal_Brain_DB/00_System`:
-
 ```bash
-cd Personal_Brain_DB/00_System
-python benchmark/retrieval_eval.py --config baseline --n 500 --diff
-python benchmark/retrieval_eval.py --config full --n 500 --hygiene --diff
+python -m memosyne.labs.retrieval_eval --config core --n 500 --hygiene --diff
+python -m memosyne.labs.retrieval_eval --config full --n 500 --hygiene --diff
 ```
 
 Common flags:
 
 | Flag | Purpose |
 |---|---|
-| `--config baseline` | no muse routing; reference baseline |
-| `--config full` | current full retrieval profile |
+| `--config core` | the default search path: dense + BM25 fusion (`baseline` is an alias) |
+| `--config full` | the pre-1.5 stack: graph, PPR, backlink, ACT-R, domain routing |
+| `--config labs` | the labs stages without domain routing |
 | `--config boost` | historical boost comparison |
 | `--config hard` | hard muse filtering comparison |
 | `--n 500` | sample count |
@@ -58,7 +122,6 @@ Common flags:
 CI-style check:
 
 ```bash
-cd Personal_Brain_DB/00_System
 make eval-ci
 ```
 
@@ -67,8 +130,7 @@ make eval-ci
 Create a private golden set from the synthetic template:
 
 ```bash
-cd Personal_Brain_DB/00_System
-cp benchmark/golden_set.example.yaml benchmark/golden_set.yaml
+cp docs/golden_set.example.yaml ~/private/golden_set.yaml   # keep it out of the repo
 ```
 
 Example shape:
@@ -85,10 +147,10 @@ Clio:
 Run with Augury metrics:
 
 ```bash
-python benchmark/retrieval_eval.py \
-  --config full \
+python -m memosyne.labs.retrieval_eval \
+  --config core \
   --hygiene \
-  --golden-set golden_set.yaml \
+  --golden-set ~/private/golden_set.yaml \
   --diff
 ```
 
@@ -112,9 +174,8 @@ Each report can include:
 Before merging retrieval-sensitive changes:
 
 ```bash
-cd Personal_Brain_DB/00_System
-python benchmark/retrieval_eval.py \
-  --config full \
+python -m memosyne.labs.retrieval_eval \
+  --config core \
   --n 500 \
   --hygiene \
   --stratify-by both \
@@ -157,7 +218,7 @@ when the queries were originally captured.
 ```bash
 export MEMOSYNE_CAPTURE_QUERIES=1
 # normal usage records (query, retrieved_paths, top_k, latency, source)
-# into Personal_Brain_DB/00_System/query_log.jsonl
+# into <artifacts>/query_log.jsonl
 # PII (email / phone / long tokens / user-supplied terms) is scrubbed at
 # write time; nothing leaves the local machine.
 ```
