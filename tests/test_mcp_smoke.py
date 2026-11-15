@@ -1,17 +1,14 @@
 """
 End-to-end smoke test for the Memosyne MCP server, run against sample_vault.
 
-This test is fully offline: it spawns Personal_Brain_DB/00_System/mcp_server.py
-as a subprocess, completes the MCP initialize handshake, calls a few tools,
-and asserts on the responses. No LLM is required.
+Fully offline: spawns `python -m memosyne.mcp_server` as a subprocess,
+completes the MCP initialize handshake, calls the core tools and asserts on
+the responses. No LLM is required.
 
 Prerequisites
 -------------
-1. Python deps installed:    pip install -e .
-                             pip install -r Personal_Brain_DB/00_System/requirements.txt
-2. Sample indexes built:     MEMOSYNE_VAULT_DIR=$PWD/sample_vault \
-                             MEMOSYNE_ARTIFACT_DIR=$PWD/sample_vault/_artifacts \
-                             python memosyne.py rebuild
+    pip install -e .          # add ".[search]" to exercise dense retrieval too
+    memosyne quickstart       # builds the sample indexes (or: make sample-rebuild)
 
 Run
 ---
@@ -25,7 +22,6 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-SERVER = REPO / "Personal_Brain_DB" / "00_System" / "mcp_server.py"
 SAMPLE_VAULT = REPO / "sample_vault"
 SAMPLE_ARTIFACTS = SAMPLE_VAULT / "_artifacts"
 
@@ -36,10 +32,16 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 EXPECTED_TOOLS = {
     "search_memory",
     "get_profile",
+    "get_digest",
     "list_journals",
     "read_file",
     "get_memory_health",
+    "muse_call",
+    "muse_answer",
+    "memosyne_guide",
 }
+# memosyne.labs tools stay hidden unless MEMOSYNE_MCP_TOOLS=all
+LABS_TOOLS = {"optimize_memory", "aletheia_revert", "get_entity_timeline"}
 
 
 async def run_smoke() -> None:
@@ -54,10 +56,11 @@ async def run_smoke() -> None:
         "MEMOSYNE_VAULT_DIR": str(SAMPLE_VAULT),
         "MEMOSYNE_ARTIFACT_DIR": str(SAMPLE_ARTIFACTS),
         "MEMOSYNE_HF_OFFLINE": "1",
+        "MEMOSYNE_MCP_TOOLS": "core",
     }
     params = StdioServerParameters(
         command=sys.executable,
-        args=[str(SERVER)],
+        args=["-m", "memosyne.mcp_server"],
         env=env,
     )
 
@@ -70,6 +73,8 @@ async def run_smoke() -> None:
             names = {t.name for t in tools.tools}
             missing = EXPECTED_TOOLS - names
             assert not missing, f"missing tools: {missing}"
+            leaked = LABS_TOOLS & names
+            assert not leaked, f"labs tools exposed by default: {leaked}"
             print(f"[ok] tools/list returned {len(names)} tools")
 
             result = await session.call_tool(
@@ -78,10 +83,32 @@ async def run_smoke() -> None:
             )
             text = "".join(b.text for b in result.content if hasattr(b, "text"))
             assert "Aiko" in text, "expected 'Aiko' in search_memory output"
-            assert "sample_chat" in text or "20_AI_Chats" in text, (
-                "expected the synthetic AI chat to be among top results"
+            assert "20_AI_Chats" not in text, (
+                "AI chats must stay out of the default (life-memory) search scope"
             )
             print(f"[ok] search_memory returned {len(text)} chars containing 'Aiko'")
+
+            result = await session.call_tool(
+                "search_memory",
+                {"query": "Aiko", "top_k": 5, "include_chats": True},
+            )
+            text = "".join(b.text for b in result.content if hasattr(b, "text"))
+            assert "20_AI_Chats" in text, (
+                "expected the synthetic AI chat when include_chats=True"
+            )
+            print("[ok] search_memory(include_chats=True) reaches the AI chat")
+
+            digest = await session.call_tool("get_digest", {"kind": "timeline"})
+            digest_text = "".join(
+                getattr(c, "text", "") for c in digest.content
+            )
+            assert "# Timeline" in digest_text, "get_digest returned no timeline"
+            print("[ok] get_digest returned the timeline")
+
+            outside = await session.call_tool("read_file", {"path": "../pyproject.toml"})
+            outside_text = "".join(getattr(c, "text", "") for c in outside.content)
+            assert "[project]" not in outside_text, "read_file escaped the vault"
+            print("[ok] read_file refuses paths outside the vault")
 
             health = await session.call_tool("get_memory_health", {})
             health_text = "".join(

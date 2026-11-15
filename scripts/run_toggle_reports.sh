@@ -11,7 +11,7 @@
 # Note: decay toggle is documented but not flipped here — the
 # per-prefix decay map is a structured config, not a boolean. The
 # existing decay map already defines the "on" state; "off" would need
-# an empty map and is exercised in the unit tests for mneme_weight.
+# an empty map and is exercised in the unit tests for access_log.
 
 set -uo pipefail
 
@@ -22,7 +22,7 @@ run_eval() {
   local label="$1"; shift
   local out="$OUT_DIR/${label}.txt"
   echo "── $label ──"
-  env "$@" python memosyne.py eval --sample 2>&1 | tee "$out" | tail -8
+  env "$@" python -m memosyne eval --sample 2>&1 | tee "$out" | tail -8
   echo ""
 }
 

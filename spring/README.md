@@ -13,8 +13,7 @@
 把任何想入庫的檔案丟進這個資料夾，召喚 Oracle：
 
 ```bash
-workon personal-memory
-python3 Personal_Brain_DB/00_System/ingest.py
+memosyne ingest
 ```
 
 Oracle 將自動完成三個儀式：
@@ -39,19 +38,19 @@ Oracle 將自動完成三個儀式：
 
 ```bash
 # 標準入庫（完整儀式）
-python3 Personal_Brain_DB/00_System/ingest.py
+memosyne ingest
 
 # 預覽，不執行任何寫入
-python3 Personal_Brain_DB/00_System/ingest.py --dry-run
+memosyne ingest --dry-run
 
 # 快速入庫（跳過 Enrichment 編織）
-python3 Personal_Brain_DB/00_System/ingest.py --no-enrich
+memosyne ingest --no-enrich
 
 # 入庫後重建完整索引
-python3 Personal_Brain_DB/00_System/ingest.py --rebuild
+memosyne ingest --rebuild
 
 # 使用輕量模型加速
-python3 Personal_Brain_DB/00_System/ingest.py --model gemma3:4b
+memosyne ingest --model gemma3:4b
 ```
 
 ---

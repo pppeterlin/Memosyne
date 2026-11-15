@@ -133,7 +133,7 @@ memosyne search "測試查詢"
 記憶不存在：...
 ```
 
-Use a path relative to `Personal_Brain_DB/` or the private vault root. Search first if unsure:
+Use a path relative to the vault root. Search first if unsure:
 
 ```bash
 memosyne search "測試查詢"

@@ -1,0 +1,6 @@
+# Journal auto-tag vocabulary for this vault.
+# Each tag lists the words that trigger it. A tag named here replaces the
+# built-in list for that tag; an empty list switches the tag off.
+寵物: ["Saturn", "貓"]
+旅行: ["東京", "機票", "旅行", "護照"]
+接案: ["提案", "客戶", "合作"]

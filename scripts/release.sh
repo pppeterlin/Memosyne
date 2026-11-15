@@ -91,8 +91,8 @@ preflight() {
   current=$(grep -E '^version = ' pyproject.toml | head -1 | sed -E 's/version = "([^"]+)"/\1/')
   echo "  ✓ pyproject.toml current version: $current"
   if [[ "$current" == "$VERSION" ]]; then
-    echo "✗ pyproject.toml is already at $VERSION; nothing to bump" >&2
-    exit 1
+    ALREADY_BUMPED=1
+    echo "  ✓ already at $VERSION (bumped in the release PR); will tag HEAD as is"
   fi
 }
 
@@ -132,8 +132,10 @@ commit_and_tag() {
     echo "  (dry-run) would commit and tag $TAG"
     return
   fi
-  git add pyproject.toml
-  git commit -m "Bump version to $VERSION"
+  if [[ ${ALREADY_BUMPED:-0} -eq 0 ]]; then
+    git add pyproject.toml
+    git commit -m "Bump version to $VERSION"
+  fi
   local commit_sha
   commit_sha=$(git rev-parse HEAD)
   git tag -a "$TAG" -m "Memosyne $TAG" "$commit_sha"

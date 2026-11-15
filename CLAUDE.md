@@ -1,54 +1,55 @@
 # Memosyne — Project Rules
 
-## 核心靈感：希臘神話記憶女神 Mnemosyne
+## 唯一目標
 
-本專案名稱 **Memosyne** = Memory + Mnemosyne（記憶女神）。
+把一個人的記憶存成**任何 AI Agent 都讀得懂的純 Markdown**，而且能原封不動帶到下一個模型。
 
-所有設計、命名、提示語都應圍繞這個神話世界觀展開。
-「記憶入庫」不只是資料處理，而是一場**神聖的儀式**。
+所有設計決策以此為準：**Vault 是資產，其餘皆為衍生。** 一個功能如果不能讓記憶更容易被寫入、被讀懂或被信任，就不屬於 core。
 
 ---
 
-## 神話世界觀
+## 核心靈感：希臘神話記憶女神 Mnemosyne
+
+本專案名稱 **Memosyne** = Memory + Mnemosyne（記憶女神）。
+「記憶入庫」不只是資料處理，而是一場**儀式**。
 
 ```
 Mnemosyne（泰坦神，記憶女神）
     ├── 她的聖泉：Spring of Mnemosyne — 飲此泉水，靈魂記憶永不遺失
     ├── 她的對立：River Lethe（忘川）  — 飲此水，遺忘一切
     └── 她的九個女兒：The Nine Muses（繆思女神）
-            ├── Clio        歷史      → 30_Journal（日記）
-            ├── Thalia      喜劇/生活 → 30_Journal（隨筆）
-            ├── Calliope    史詩/對話 → 20_AI_Chats
-            ├── Urania      天文/知識 → 50_Knowledge
             ├── Polyhymnia  神聖詩歌  → 10_Profile（身份）
-            ├── Erato       愛情詩   → 感情相關記憶
-            ├── Melpomene   悲劇     → 低潮/反思記憶
-            ├── Terpsichore 舞蹈     → 40_Projects（行動）
-            └── Euterpe     音樂     → 創作/靈感記憶
-
-記憶庫核心角色：
-    Oracle of Mneme  — 負責 Enrichment 的 LLM 角色
-    The Spring       — spring/ 入口資料夾
-    The Vault        — Personal_Brain_DB/ 記憶庫主體
+            ├── Calliope    史詩/對話 → 20_AI_Chats
+            ├── Clio        歷史      → 30_Journal（日記）
+            ├── Terpsichore 舞蹈      → 40_Projects（行動）
+            └── Urania      天文/知識 → 50_Knowledge
 ```
 
 ---
 
 ## 命名規範（Naming Convention）
 
-新功能或模組命名時，優先從神話中取靈感：
+**程式碼用工程名，神話留給人看的地方。**
 
-| 功能類型 | 建議命名方向 | 例子 |
-|---------|------------|------|
-| 資料入口 / drop zone | Spring, Well, Threshold | `spring/` |
-| 記憶儲存 / vault | Vault, Codex, Tapestry | `Personal_Brain_DB/` |
-| 搜尋 / 查詢 | Oracle, Divination, Echo | `oracle query` |
-| 分析 / 洞察 | Augury, Omen, Revelation | gap analysis = "The Call of the Muses" |
-| 刪除 / 歸檔 | Lethe, Oblivion | 歸檔 = "Surrendered to Lethe" |
-| 定期任務 | Rite, Vigil, Offering | 每日入庫 = "Daily Offering" |
-| 認知衰減 / 存取紀錄 | Chronicle, Mneme | access log = "The Chronicle of Mneme" |
-| 語境化增強 | Illumination, Revelation | contextual notes = "The Illumination" |
-| 錯誤 / 失敗 | Hubris, Nemesis | retry = "Defying Nemesis" |
+- 模組、函式、變數、環境變數、artifact key：直接說明它做什麼（`access_log.py`、`iter_memory_files()`、`MEMOSYNE_SEARCH_PROFILE`）。讀程式的人不應該需要查對照表。
+- CLI 指令、輸出訊息、文件的敘事與 glossary：可以用神話名（`memosyne slumber`、"The Oracle faltered."）。
+- 既有的資料檔名（`tapestry_db`、`chronicle.db`、`aletheia_log.jsonl`…）不改名——那是使用者 vault 裡的相容性契約。
+
+| 概念 | 對使用者的名字 | 程式碼 |
+|---|---|---|
+| 資料入口 | The Spring | `paths.spring_dir()`、`ingest.py` |
+| 記憶本體 | The Vault | `paths.data_root()` |
+| LLM 語意增強 | The Oracle / The Weaving | `enrich.py` |
+| 全貌地圖 | The Digest | `digest.py` |
+| 存取紀錄 | The Chronicle of Mneme | `access_log.py` |
+| 缺口提問 | The Call of the Muses | `gap_questions.py` |
+| 實體圖譜 | The Tapestry | `labs/graph.py` |
+| 領域路由 | The Muses | `labs/routing.py` |
+| 記憶鞏固 | The Rite of Slumber | `labs/consolidate.py` |
+| 審計 / 更正 | The Augury / Aletheia | `labs/audit.py`、`labs/corrections.py` |
+| 遺忘 | Lethe | `dormant` frontmatter 標記 |
+
+完整模組對照見 `docs/architecture.md`。
 
 ---
 
@@ -56,193 +57,122 @@ Mnemosyne（泰坦神，記憶女神）
 
 程式的輸出訊息可以帶有儀式感，但**不強制**——在不影響可讀性的前提下加入。
 
-**原則：**
 - 流程開始 → 召喚感（"The Spring stirs..."）
-- 完成 → 永恆感（"The tapestry grows richer."、"Nothing lost to Lethe."）
-- 錯誤 → 人性化但莊重（"The Oracle faltered."）
+- 完成 → 永恆感（"Nothing lost to Lethe."）
+- 錯誤 → 人性化但莊重（"The Oracle faltered."），並且一定附上下一步該怎麼做
 - 空狀態 → 寧靜感（"The waters are still."）
-
-**範例對照：**
 
 ```
 ❌ Processing complete. 3 files added.
 ✅ 🌊 3 memory fragments have found their eternal place.
-   The tapestry of Memosyne grows richer.
 
 ❌ Error: LLM failed for file.md
 ✅ The Oracle faltered for: file.md
-
-❌ No files to process.
-✅ The Spring is still. No fragments await the Oracle.
 ```
+
+---
+
+## 架構：三層
+
+```
+core    ingest → enrich → digest → keyword search → MCP        永遠安裝
+search  dense vector retrieval（ChromaDB + embeddings）          pip install -e ".[search]"
+labs    graph、ACT-R、routing、consolidation、audit、corrections  memosyne.labs，opt-in
+```
+
+- 預設搜尋路徑只有 dense（有裝才用）+ BM25 → RRF。其餘階段在 `memosyne.labs`，由 `MEMOSYNE_SEARCH_PROFILE=full` 開啟。這個預設來自 `docs/evaluation.md` 的 ablation，不是偏好。
+- 列舉型與時間軸問題交給 digest（`<vault>/_digest/`），不是交給檢索。
+- AI 對話紀錄只在明確要求時進入搜尋範圍。
 
 ---
 
 ## 開發環境
 
-本專案的本地開發、CLI 執行、health check、MCP check 與驗證指令，應使用專案專用 Python virtualenv，不要用裸 `python3` 的結果判斷專案環境是否正常。
-
-公開文檔只記錄通用要求：
+驗證專案狀態請用專案自己的 virtualenv，不要用裸 `python3` 的結果下判斷：
 
 ```bash
-python --version   # Python 3.10+
-python memosyne.py health
+memosyne health
+make verify
 ```
 
-本機開發者可在不進 git 的 `AGENTS.local.md` 記錄個人環境路徑、virtualenv 名稱、alias 與私有操作習慣。若該檔存在，agent 應優先讀取並遵守；但不得把其中內容複製到公開文檔。
-
-任何含有個人路徑、私有 virtualenv 名稱、API key 位置、local machine 設定的內容，都應放在 gitignored local override，而不是 `README`、`docs/`、`AGENTS.md` 或 `CLAUDE.md`。
+本機開發者可在不進 git 的 `CLAUDE.local.md` 記錄個人環境路徑、virtualenv 名稱、alias 與私有操作習慣。若該檔存在，agent 應優先讀取並遵守；但不得把其中內容複製到公開文檔。
 
 ---
 
-## 現有儀式架構（已實作）
+## 隱私規範（程式碼、文檔與示例一體適用）
 
-```
-The Spring Ritual（ingest.py）
-    I.   The Discernment  — 繆思女神辨識格式，路由至各自領域
-    II.  The Weaving      — Oracle 提取記憶精華，編織進 YAML + 織入 Tapestry
-    III. The Inscription  — 向量化，銘刻入 Vault
+這個 repo 是公開的。以下規範適用於程式碼、註解、測試、README、docs、sample vault、commit message。
 
-Oracle of Mneme（enrich.py）
-    — LLM 角色，只說 JSON，不推斷、不幻想，只記錄原文出現的事實
-    — 同時提取 personal_facts（個人生活事實，區別於客觀知識）
-    — 每次增強後自動呼叫 tapestry.weave_memory() 更新圖
+- 只使用合成資料：通用地名、通用場景、`sample_vault/` 裡的虛構人物。
+- 不得寫入真實人名、暱稱、寵物名、居住地、雇主，或任何可回推個人經歷的組合——**包含程式碼裡的關鍵字清單與 docstring 範例**。個人化詞彙放在 vault 內的設定檔（如 `<vault>/tags.yaml`）。
+- 不得複製私有記憶的原文、標題、摘要或真實查詢。
+- 不得 commit 任何由真實 vault 生成的檔案：索引、快取、圖譜匯出、評估報告、擷取的查詢。**刪除不會讓它從 git 歷史消失。**
+- 含個人路徑、API key 位置、機器設定的內容，只放在 gitignored 的 local override。
+- `make verify` 會跑三道檢查；其中 `check_no_private_names.sh` 需要本機的 `.private_terms` 禁字清單才會生效，沒有就等於沒檢查。
 
-The Tapestry（tapestry.py + tapestry.json）
-    — 圖拓樸記憶關聯層（networkx DiGraph）
-    — 節點：memory / person / location / event / period
-    — 邊：mentions / happened_at / located_in / involved_in / during
-    — 解決「Tokyo → 找不到 friend-A 相關記憶」的跨實體關聯斷裂問題
+---
 
-The Vault（Personal_Brain_DB/）
-    — 記憶的永恆居所，由繆思女神各自守護其領域
-
-搜尋架構（vectorize.py）
-    Dense（ChromaDB）+ BM25 + Tapestry Graph → 三路 RRF 合併
-    → ACT-R 認知衰減重排（The Chronicle of Mneme）
-
-The Chronicle of Mneme（mneme_weight.py）
-    — ACT-R 認知衰減系統：記憶的激活強度 = f(使用頻率, 時間距離)
-    — access_log: chronicle.db（SQLite），記錄每次搜尋/閱讀的存取
-    — 公式：A_i = ln(Σ t_k^{-0.5})
-    — 整合到 search pipeline 作為 rerank bonus
-
-The Illumination（vectorize.py --contextualize）
-    — Contextual Retrieval：為每個段落 chunk 加上語境化摘要
-    — 解決切片斷章取義問題，讓 embedding 捕捉全局脈絡
-    — 快取：contextual_cache.json（避免重複 LLM 呼叫）
-
-PPR Spreading Activation（tapestry.py）
-    — Personalized PageRank：以搜尋結果為 seed，在圖譜中擴散
-    — 發現語義隱含相關但未被向量/BM25 直接命中的記憶
-    — 流程：Kuzu 子圖 → NetworkX DiGraph → PPR → RRF 合併
-
-The Rite of Slumber（slumber.py）
-    — 記憶鞏固機制：定期整理記憶庫
-    — Reflection：從近期記憶提煉高層次洞察 → 10_Profile/reflections/
-    — Hebbian Learning：共現記憶強化 co_recalled 邊
-    — The Lethe Protocol：策略性遺忘（dormant 標記），不刪除可恢復
-```
-
-### YAML enrichment 欄位
+## 記憶的格式
 
 ```yaml
+---
+title: "Tokyo Slow 第二集邀約"
+date: 2026-02-03
+type: journal
 # ── Enrichment（LLM 語意增強，僅含原文出現的實體）──
-enriched_at: "2026-04-11T12:00:00"
-importance: medium          # low / medium / high
-period: "2025年某城市求職期"
-themes: ["職涯", "轉變"]
+enriched_at: "2026-02-04T09:00:00"
+importance: high            # low / medium / high
+period: "2026 冬季接案期"
+themes: ["旅行", "工作"]
 personal_facts:             # 個人生活事實（非客觀知識）
-  - "friend-A 住在 Tokyo"
+  - "Aiko 住在東京"
 entities:
-  locations: ["Tokyo", "Osaka"]
-  people: ["friend-A"]
-  events: ["friend-A project"]
-  emotions: ["期待"]
-```
-
-### Tapestry CLI 用法
-
-```bash
-# 從現有記憶庫重建 Tapestry（初次設定或 rebuild）
-python3 00_System/ingest.py --weave-tapestry
-python3 00_System/enrich.py --weave-tapestry   # 同等效果
-
-# Tapestry 統計 / 搜尋測試
-python3 00_System/tapestry.py --stats
-python3 00_System/tapestry.py --search "Tokyo,friend-A"
-python3 00_System/tapestry.py --backfill
-```
-
-### The Chronicle CLI 用法
-
-```bash
-# 存取紀錄統計
-python3 00_System/mneme_weight.py --stats
-
-# 最活躍的 10 個記憶
-python3 00_System/mneme_weight.py --top 10
-
-# 查詢特定記憶的 ACT-R 激活分數
-python3 00_System/mneme_weight.py --score "30_Journal/2025/250604.md"
-```
-
-### Contextual Retrieval CLI 用法
-
-```bash
-# The Illumination — 為所有段落生成語境化摘要
-python3 00_System/vectorize.py --contextualize
-
-# 指定模型 + 重建所有
-python3 00_System/vectorize.py --contextualize --ctx-model gemma3:4b --rebuild
-
-# 生成語境化摘要後重建索引（完整流程）
-python3 00_System/vectorize.py --contextualize && python3 00_System/vectorize.py --rebuild
-```
-
-### The Rite of Slumber CLI 用法
-
-```bash
-# 執行完整鞏固（三個儀式全做）
-python3 00_System/slumber.py
-
-# 僅反射（從近期記憶提煉洞察）
-python3 00_System/slumber.py --reflect --days 14
-
-# 僅赫布學習（共現記憶強化）
-python3 00_System/slumber.py --hebbian
-
-# 策略性遺忘（預覽模式）
-python3 00_System/slumber.py --forget --dry-run
-
-# 鞏固統計
-python3 00_System/slumber.py --stats
+  locations: ["東京", "冰島"]
+  people: ["Aiko", "Ravi", "Wei"]
+  events: ["《Tokyo Slow》第二集的合作"]
+  emotions: []
+---
 ```
 
 ---
 
-## 未來可延伸的儀式設計
+## 常用指令
 
-以下是**尚未實作但符合神話主題**的功能命名建議，開發時可參考：
+```bash
+memosyne ingest                    # The Spring Ritual：分類 → 增強 → 索引 → 彙整
+memosyne search "…" [--include-chats] [--profile full]
+memosyne digest [--print timeline|entities]
+memosyne rebuild [--full]
+memosyne call                      # The Call of the Muses
+memosyne chronicle --stats         # 存取紀錄
+memosyne mcp [--print-config|--check|--http]
+memosyne health
 
-- **The Call of the Muses** — Gap Analysis，當某位繆思的領域記憶太少，她會主動呼喚：
-  *"Clio is silent about your early years. Tell me of the days before 2022."*
+# labs
+memosyne slumber [--reflect|--hebbian|--forget --dry-run|--stats]
+memosyne tapestry [--stats|--search "A,B"|--backfill]
+memosyne audit / correct / contextualize / hyqe / query-log / chat
+```
 
-- **The Lethe Protocol** — 記憶過期 / 降溫機制，久未查詢的記憶沉入忘川
-
-- **The Augury** — 定期搜尋品質報告，像占卜一樣給出健康診斷
-
-- **The Vigil** — 背景監控 / watch.py，守夜等待新記憶進入
-
-- **The Codex** — 結構化的 Profile 文件（10_Profile/），記憶女神的聖典
-
-- **Echoes** — 相似記憶的關聯推薦，記憶在時間中留下的回響
+每個模組也可以 `python -m memosyne.<module> --help` 單獨執行。
 
 ---
 
 ## 開發守則
 
-1. **Ground-Truth Preserving** — Oracle 永遠只記錄原文出現的事實，不推斷、不補充
-2. **神話主題是裝飾，不是障礙** — 若某處加入主題會讓可讀性下降，保持工程優先
-3. **命名一致性** — 新功能盡量沿用已有的神話詞彙（Spring, Oracle, Vault, Muse, Weaving...）
-4. **儀式感體現在細節** — 不需要每行都有詩意，關鍵節點（啟動、完成、錯誤）有即可
+1. **Ground-Truth Preserving** — Oracle 只記錄原文出現的事實，不推斷、不補充。非字面抽取的 LLM 產物（aggregates、reflections）必須放在明確分開的地方。
+2. **Vault 是唯一事實來源** — 任何索引都必須能從 Markdown 重建。
+3. **分層不可逆向** — core 模組不得在 module level import `memosyne.labs` 或 search extra 的套件；一律在函式內、功能開關後 lazy import。
+4. **路徑只由 `paths.py` 決定** — 不得用 `__file__` 推算資料位置。
+5. **能不用 LLM 就不用** — 可以決定性完成的事（digest、缺口分析、連結抽取）就不要依賴 LLM 或索引。
+6. **預設值要有證據** — 檢索階段要成為預設，必須有評估證明它有幫助；沒有證據就放 labs。
+7. **神話是裝飾，不是障礙** — 加入主題若讓可讀性下降，工程優先。
+8. **儀式感體現在細節** — 關鍵節點（啟動、完成、錯誤）有即可，不需要每行都有詩意。
+
+---
+
+## 尚未實作、符合主題的方向
+
+- **Echoes** — 相似記憶的關聯推薦，記憶在時間中留下的回響
+- **The Vigil** — 背景守夜，新檔案進入 spring 時自動入庫
+- 更多來源的 parser（其他 AI 助理的匯出、通訊軟體紀錄）

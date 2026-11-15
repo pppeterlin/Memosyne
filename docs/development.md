@@ -1,154 +1,103 @@
 # Development
 
-How to set up Memosyne for hacking and how to verify a release before publishing.
-
----
-
-## Repository Layout
+## Repository layout
 
 ```
-memosyne.py                     # Public CLI entry point (subcommands wrap 00_System scripts)
-pyproject.toml                  # Packaging metadata; `pip install -e .` exposes the `memosyne` script
-docs/                           # Public documentation
-sample_vault/                   # Fully synthetic vault used by tests and demos
-  _eval/golden.yaml             # Tiny golden set for `memosyne eval --sample`
-  _artifacts/                   # gitignored — derived indexes when running in sample mode
+src/memosyne/           the package — see docs/architecture.md for the module map
+  labs/                 optional / experimental features
+  skills/               agent-facing skill docs shipped with the package
+  templates/            Markdown templates
 tests/
-  test_mcp_smoke.py             # Offline MCP stdio end-to-end test
-Personal_Brain_DB/
-  00_System/                    # Implementation modules
-    artifacts.py                # Artifact registry + data_root() resolver
-    vectorize.py                # Dense + BM25 indexing and search
-    enrich.py                   # Oracle of Mneme entity extraction
-    tapestry.py                 # Knowledge graph (Kuzu)
-    mneme_weight.py             # ACT-R access log / Chronicle of Mneme
-    augury.py                   # Memory quality audit
-    slumber.py                  # Memory consolidation rituals
-    aletheia.py                 # Aletheia correction tools
-    mcp_server.py               # MCP server (FastMCP)
-    benchmark/                  # Eternal Mirror retrieval evaluation
-    eval_golden.py              # Driver behind `memosyne eval`
-  _vault/                       # Private content; tracked as a submodule pointing at a private repo
+  conftest.py           points every test at an empty temporary home
+  unit/                 offline unit tests (core install is enough)
+  test_mcp_smoke.py     end-to-end MCP stdio test against sample_vault
+  Dockerfile            clean-install verification image
+sample_vault/           fully synthetic vault used by tests, demos and CI
+spring/                 default drop zone (contents are never committed)
+scripts/                invariant checks, verify, release
+docs/                   user docs; docs/history/ holds per-release planning notes
 ```
 
-The implementation modules can be invoked directly (`python Personal_Brain_DB/00_System/<script>.py …`) but the `memosyne` CLI is the supported public surface.
+Your own vault is never part of this repository.
 
----
-
-## Local Setup
+## Setup
 
 ```bash
-git clone <repo-url> memosyne
-cd memosyne
-
-# Create and activate a Python 3.10+ environment by your preferred method
-python -m venv .venv && source .venv/bin/activate
-
-pip install -e .
-pip install -r Personal_Brain_DB/00_System/requirements.txt
+git clone https://github.com/pppeterlin/Memosyne && cd Memosyne
+uv sync --extra dev                 # core + pytest
+uv sync --extra dev --extra all     # everything
+# or: pip install -e ".[dev]"  /  pip install -e ".[dev,all]"
 ```
 
-Memosyne does not bundle a generative LLM. For workflows that do need one (enrichment, contextualization, local chat), point Memosyne at a local LLM endpoint of your choice — see [configuration.md](configuration.md).
-
----
-
-## Verifying Changes
-
-Public verification path uses `sample_vault/`. No private data and no LLM are required.
+## Verify
 
 ```bash
-# Build sample indexes (safe to rerun; clobbers sample_vault/_artifacts/ only)
-MEMOSYNE_VAULT_DIR=$PWD/sample_vault \
-MEMOSYNE_ARTIFACT_DIR=$PWD/sample_vault/_artifacts \
-python memosyne.py rebuild
-
-# Health
-MEMOSYNE_VAULT_DIR=$PWD/sample_vault \
-MEMOSYNE_ARTIFACT_DIR=$PWD/sample_vault/_artifacts \
-python memosyne.py health
-
-# Retrieval evaluation (5 synthetic golden questions)
-python memosyne.py eval --sample
-
-# MCP stdio end-to-end smoke test
-python tests/test_mcp_smoke.py
+make verify        # static invariants + unit tests; must be green before a release
+make test          # unit tests only
+memosyne quickstart            # builds sample indexes, evaluates, searches, digests
+make mcp-smoke                 # MCP stdio end to end (run quickstart first)
 ```
 
-These three together exercise: vault discovery, indexing, dense + BM25 search, retrieval ranking, MCP server lifecycle, and tool dispatch. If any of them regress on a PR, the change has touched something user-visible and needs investigation.
+`make verify` and the quickstart both work on the core install — no torch,
+no ChromaDB, no LLM. CI runs exactly these on every push and pull request.
 
----
-
-## Privacy Discipline
-
-Public commits must never contain real user content, secrets, or anything derived from a private vault. Refer to [privacy.md](privacy.md) for the data layering rules.
-
-Practical guardrails:
-
-- `.gitignore` covers `.env`, `_internal/`, and the standard derived-artifact paths.
-- The private vault is a submodule (`Personal_Brain_DB/_vault → <private-repo>`); the public repo only records the submodule pointer.
-- `sample_vault/_artifacts/` is ignored, so demo runs do not pollute the working tree.
-
-When opening a PR that touches files outside `00_System/`, run `git diff --stat origin/master...HEAD` and re-read the changed files for accidental private content.
-
----
-
-## Clean-Install Verification
-
-`tests/Dockerfile` builds a hermetic image that exercises the full install + verification path with no host caches, no private vault, and no preinstalled dependencies. A successful build means a fresh clone on a machine with only Docker and Python tooling can reach a healthy state.
+To exercise a clean machine end to end:
 
 ```bash
-docker build -f tests/Dockerfile -t memosyne-verify .
+docker build -f tests/Dockerfile --target core   -t memosyne-verify-core .
+docker build -f tests/Dockerfile --target search -t memosyne-verify .
 ```
 
-The Dockerfile runs `rebuild`, `eval --sample`, and the MCP smoke test as separate `RUN` steps, so a build failure points at the exact stage. First build downloads CPU-only PyTorch + the embedding model and takes ~10–30 minutes depending on network; subsequent builds reuse layer cache.
+## Rules of the road
 
----
+- **Layering.** Core modules must not import `memosyne.labs` or the search
+  extra's packages at module level. Import lazily, inside the function that
+  needs it, behind a feature switch. `tests/unit/test_search_core.py` checks
+  that the core profile never calls a labs stage.
+- **Paths.** Only `memosyne/paths.py` decides where things live. Do not
+  compute paths from `__file__`; ask `paths` for the vault, an artifact or
+  the spring.
+- **Ground truth.** Enrichment records only what the source text literally
+  says. Anything derived by an LLM that is *not* a literal extraction belongs
+  in a clearly separate place (aggregates, reflections), never in a memory's
+  own frontmatter.
+- **Deterministic first.** If a feature can work without an LLM and without
+  an index (digest, gap questions, link extraction), build it that way.
+- **Naming.** File and function names say what the code does. Mythological
+  names are for CLI verbs and user-facing messages.
+- **Evidence before defaults.** A retrieval stage becomes a default only
+  with an evaluation that shows it helps ([evaluation.md](evaluation.md)).
 
-## Release Checklist
+## Privacy invariants
 
-Before tagging a public release (or before publishing a v0.x branch upstream):
+Three scripts run in `make verify`:
 
-1. **Working tree is clean** for the publishable surface.
-   ```bash
-   git status
-   git diff --stat origin/master...HEAD
-   ```
-2. **Rebuild and verify on sample data.** All three of `health`, `eval --sample`, and `tests/test_mcp_smoke.py` must pass on the host venv. If the release is a major one, also run the clean-install verification image above.
-3. **Run a secret scan over the full git history.** Memosyne uses [gitleaks](https://github.com/gitleaks/gitleaks).
-   ```bash
-   # History scan — this is the one that matters for OSS publication
-   gitleaks detect --source . --redact
+| Script | Checks |
+|---|---|
+| `check_no_real_paths.sh` | no real home-directory paths in code, tests, scripts or docs |
+| `check_no_private_names.sh` | none of *your* private terms appear in code, tests, scripts or docs |
+| `check_sample_vault_synthetic.sh` | the sample vault contains no secrets, host paths or unlisted entities |
 
-   # Working-tree scan — expect findings inside .env, _internal/, and the
-   # private _vault submodule. Confirm each finding is in a path that is
-   # gitignored or inside the private submodule before approving.
-   gitleaks dir --redact .
-   ```
-   Any history finding outside of intentional sample fixtures must be triaged before release: rotate the credential, scrub history if necessary, and refresh the release branch.
-4. **Update `docs/v0.X_*.md`** if the release scope changed since the planning doc was written.
-5. **Tag and publish.** Prefer the scripted path so we never skip a version again:
-   ```bash
-   make release VERSION=0.X.Y           # preflight + verify + bump + tag
-   # then follow the printed next-step commands to push + gh release create
-   ```
-   The script enforces: must be on master, clean working tree, in sync with
-   origin, `make verify` green, tag does not already exist. If any check
-   fails it refuses to write.
+`check_no_private_names.sh` only works if you give it a block-list: create
+`.private_terms` in the repo root (git-ignored) or `~/.memosyne/private_terms`,
+one term per line — names of people, places and employers that must never
+appear in a commit. Without that file the check passes silently.
 
-   For the rare case where you need the legacy manual flow, the underlying
-   commands are equivalent to:
-   ```bash
-   sed -i '' 's/^version = .*/version = "0.X.Y"/' pyproject.toml
-   git commit -am "Bump version to 0.X.Y" && git push
-   git tag -a v0.X.Y -m "Memosyne v0.X.Y" && git push origin v0.X.Y
-   gh release create v0.X.Y --title "..." --notes-file ...
-   ```
+Never commit anything generated from a real vault: indexes, caches, graph
+exports, evaluation reports, captured queries. Deleting a file later does not
+remove it from git history.
 
----
+Sample-vault content stays fully synthetic; see [sample_vault.md](sample_vault.md)
+for the persona constraints.
 
-## Contribution Notes
+## Release
 
-- Match the existing commit message style — short imperative subject under ~70 characters, body wrapped at ~72.
-- Sample-vault content stays fully synthetic. See `docs/sample_vault.md` for the persona constraints.
-- New artifacts that need to follow `MEMOSYNE_VAULT_DIR` / `MEMOSYNE_ARTIFACT_DIR` should register in `Personal_Brain_DB/00_System/artifacts.py` rather than introducing new ad-hoc paths.
-- Provider-specific names (Ollama, OpenRouter, particular models, etc.) are examples in public docs, not requirements. Avoid hard-coding them in code defaults or documentation tables.
+The version lives in `pyproject.toml`. Bump it (and add a CHANGELOG entry) in
+the release pull request, then, on an up-to-date `master`:
+
+```bash
+make release-dry VERSION=X.Y.Z   # shows what would happen
+make release VERSION=X.Y.Z       # make verify → annotated tag → draft notes
+git push origin master vX.Y.Z
+gh release create vX.Y.Z --title "Memosyne vX.Y.Z — <theme>" --notes-file <draft>
+```

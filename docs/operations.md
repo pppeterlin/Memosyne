@@ -8,7 +8,7 @@ Use the project virtualenv before running operational commands:
 
 ```bash
 python --version   # Python 3.10+
-python memosyne.py health
+memosyne health
 ```
 
 If `memosyne` was installed in editable mode:
@@ -24,34 +24,34 @@ Do not diagnose Memosyne with an unrelated system `python3`; it may not have the
 
 ```bash
 # Check readiness
-python memosyne.py health
+memosyne health
 
 # Drop files into The Spring, then ingest
-python memosyne.py ingest
+memosyne ingest
 
 # Search
-python memosyne.py search "測試查詢" --top 5
+memosyne search "測試查詢" --top 5
 
 # Smoke-test search without changing Chronicle / ACT-R state
-python memosyne.py search "測試查詢" --top 5 --no-record-access
+memosyne search "測試查詢" --top 5 --no-record-access
 
 # Rebuild retrieval indexes
-python memosyne.py rebuild
+memosyne rebuild
 
 # Check MCP importability
-python memosyne.py mcp --check
+memosyne mcp --check
 
 # Print MCP client config
-python memosyne.py mcp --print-config
+memosyne mcp --print-config
 
 # Chronicle stats
-python memosyne.py chronicle --stats
+memosyne chronicle --stats
 
 # Slumber stats
-python memosyne.py slumber --stats
+memosyne slumber --stats
 ```
 
-The root `memosyne.py` CLI is intentionally a thin v0.3 wrapper over existing scripts. It stabilizes the command surface without forcing a large internal refactor.
+Every subcommand is also runnable as a module, e.g. `python -m memosyne.ingest --help`.
 
 Related docs:
 
@@ -65,13 +65,13 @@ Related docs:
 Human-readable:
 
 ```bash
-python memosyne.py health
+memosyne health
 ```
 
 Machine-readable:
 
 ```bash
-python memosyne.py health --json
+memosyne health --json
 ```
 
 Statuses:
@@ -101,7 +101,7 @@ Fix:
 
 ```bash
 # Activate the project virtualenv, then rerun
-python memosyne.py health
+memosyne health
 ```
 
 If the command still uses the wrong interpreter, call the virtualenv Python directly or reinstall the editable CLI inside the correct environment.
@@ -111,32 +111,35 @@ If the command still uses the wrong interpreter, call the virtualenv Python dire
 Symptom:
 
 ```text
-[fail] import chromadb
-[fail] import kuzu
+[ok] search extra not installed — keyword search only; add with: pip install -e ".[search]"
 ```
 
-Fix:
+That line is informational: the core install works without dense retrieval.
+Install the layer you want and check again:
 
 ```bash
-pip install -r Personal_Brain_DB/00_System/requirements.txt
-python memosyne.py health
+pip install -e ".[search]"   # dense retrieval
+pip install -e ".[labs]"     # graph, consolidation, audit, corrections, chat
+memosyne health
 ```
 
-### Missing or Stale Private Vault
+### Vault Not Found
 
 Symptom:
 
 ```text
-[fail] The Vault ...
-[warn] vault submodule ...
+[warn] The Vault /…/vault (0 memories)
 ```
 
-Fix:
+`memosyne health` prints the vault path it resolved. If that is not where
+your memories live, point Memosyne at them and check again:
 
 ```bash
-git submodule update --init --recursive
-python memosyne.py health
+echo 'MEMOSYNE_VAULT_DIR=/path/to/your/vault' >> .env
+memosyne health
 ```
+
+A new vault is created with `memosyne init`.
 
 ### Missing Retrieval Artifacts
 
@@ -150,8 +153,8 @@ Symptom:
 Fix:
 
 ```bash
-python memosyne.py rebuild
-python memosyne.py health
+memosyne rebuild
+memosyne health
 ```
 
 ### Chronicle SQLite Needs Rebuild
@@ -159,8 +162,8 @@ python memosyne.py health
 Chronicle uses `chronicle.jsonl` as the append-only source log. SQLite is a derived cache.
 
 ```bash
-python memosyne.py chronicle --rebuild-db-from-jsonl
-python memosyne.py chronicle --stats
+memosyne chronicle --rebuild-db-from-jsonl
+memosyne chronicle --stats
 ```
 
 ### MCP Import Fails
@@ -174,8 +177,8 @@ Symptom:
 Fix:
 
 ```bash
-pip install -r Personal_Brain_DB/00_System/requirements.txt
-python memosyne.py mcp --check
+pip install -e .
+memosyne mcp --check
 ```
 
 ### LLM Endpoint Not Reachable
@@ -189,7 +192,7 @@ Symptom (label depends on which backend the health check probes):
 Fix only when you need enrichment, contextualization, HyQE, or local chat. Start whichever local LLM runtime you use (Ollama, llama.cpp server, LM Studio, vLLM, …) so the configured endpoint becomes reachable, then rerun:
 
 ```bash
-python memosyne.py health
+memosyne health
 ```
 
 If you are deliberately using a cloud provider for these workflows, ensure the corresponding credentials are loaded in your local config; see [configuration.md](configuration.md).

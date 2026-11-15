@@ -10,30 +10,31 @@ Memosyne 的設計假設前提：**記憶屬於使用者，預設不離開本機
 
 | 層 | 路徑 | 性質 | 是否進公開 repo |
 |---|---|---|---|
-| Source code | `memosyne.py`、`Personal_Brain_DB/00_System/`、`docs/` | 公開 | ✅ |
+| Source code | `src/memosyne/`、`docs/`、`tests/` | 公開 | ✅ |
 | Sample vault | `sample_vault/` | 完全合成 | ✅ |
-| Private vault | `Personal_Brain_DB/_vault/` | 使用者私有記憶 | ❌（gitignored / submodule） |
+| Private vault | `<vault>/`（預設 `vault/`，可用 `MEMOSYNE_VAULT_DIR` 指到 repo 之外） | 使用者私有記憶 | ❌（gitignored；不屬於本 repo） |
 | Derived artifacts | 索引、快取、access log、graph DB | 由 vault 衍生 | ❌ |
 | Secrets | API keys、`.env`、`openrouter-key` | 認證 | ❌ |
 
 「Derived artifacts」指任何由 vault 內容生成、能反推私人資訊的檔案：
 
 ```
-Personal_Brain_DB/00_System/chroma_db/          # Dense embeddings
-Personal_Brain_DB/_vault/bm25_index.pkl         # BM25 索引
-Personal_Brain_DB/_vault/chronicle.db           # ACT-R 存取紀錄
-Personal_Brain_DB/_vault/chronicle.jsonl        # 存取紀錄原始流
-Personal_Brain_DB/_vault/tapestry_db/           # Kuzu graph
-Personal_Brain_DB/_vault/contextual_cache.json  # Contextual Retrieval 快取
-Personal_Brain_DB/_vault/hyqe_cache.json        # HyQE 快取
-Personal_Brain_DB/_vault/muse_centroids.json    # Muse 路由 centroid
-Personal_Brain_DB/_vault/augury_reports/        # Augury 評估報告
-Personal_Brain_DB/_vault/benchmark_reports/     # Eternal Mirror 評估
-Personal_Brain_DB/00_System/aletheia_log.jsonl  # Correction 紀錄
-Personal_Brain_DB/00_System/benchmark/golden_set.yaml  # 含真實查詢
+<artifacts>/bm25_index.pkl         # BM25 索引
+<artifacts>/chroma_db/             # Dense embeddings（search extra）
+<artifacts>/chronicle.db / .jsonl  # 存取紀錄
+<artifacts>/tapestry_db            # 實體圖譜（labs）
+<artifacts>/contextual_cache.json  # Contextual Retrieval 快取（labs）
+<artifacts>/hyqe_cache.json        # HyQE 快取（labs）
+<artifacts>/augury_reports/        # 審計報告（labs）
+<artifacts>/benchmark_reports/     # 檢索評估報告（labs）
+<artifacts>/aletheia_log.jsonl     # Correction 紀錄（labs）
+<vault>/_digest/                   # 時間軸與實體索引（由 frontmatter 生成）
+你自己的 golden_set.yaml           # 含真實查詢，請放在 repo 之外
 ```
 
-`.gitignore` 已涵蓋以上路徑。私有 vault 透過 git submodule 連到使用者自己的 private repo。
+`<artifacts>` 預設是 `<vault>/_artifacts`。Vault 不屬於本 repo：放在 repo 之外，或放在你自己的 **private** repo。
+
+> **一個教訓**：衍生檔一旦 commit 過就永遠留在 git 歷史裡，之後再刪除或加進 `.gitignore` 都沒有用。個人化的詞彙（人名、地名、雇主）也不要寫進程式碼或文件範例——放在 vault 裡的設定檔（如 `tags.yaml`）。`scripts/check_no_private_names.sh` 會掃描程式碼與文件，但它需要你在本機建立 `.private_terms` 禁字清單才會生效。
 
 ---
 
@@ -76,7 +77,7 @@ Personal_Brain_DB/00_System/benchmark/golden_set.yaml  # 含真實查詢
 - 設定 `LLM_PROVIDER` 或 model identifier 指向 cloud provider（例如 OpenRouter、自架 OpenAI-compatible proxy）。
 - 提供對應的 API key 環境變數或 key 檔。
 
-實際支援的 provider 視 `Personal_Brain_DB/00_System/llm_client.py` 為準；新增 provider 時應同步更新本文件。
+實際支援的 provider 視 `src/memosyne/llm_client.py` 為準；新增 provider 時應同步更新本文件。
 
 ### 永遠不離開本機
 
@@ -119,11 +120,11 @@ Personal_Brain_DB/00_System/benchmark/golden_set.yaml  # 含真實查詢
 
 | 想做什麼 | 命令 |
 |---|---|
-| 重建所有索引 | `python memosyne.py rebuild` |
+| 重建所有索引 | `memosyne rebuild` |
 | 清空存取紀錄 | 刪除 `chronicle.db` 與 `chronicle.jsonl` |
 | 清空 LLM 快取 | 刪除 `contextual_cache.json`、`hyqe_cache.json` |
-| 重建 graph | `python Personal_Brain_DB/00_System/tapestry.py --rebuild` |
-| 完全離開 Memosyne | 刪除 repo 與你自己的 private vault submodule 即可，沒有 hosted 服務需要登出 |
+| 重建 graph | `memosyne tapestry --rebuild` |
+| 完全離開 Memosyne | 刪除 repo 與你自己的 vault 即可，沒有 hosted 服務需要登出 |
 
 ---
 
