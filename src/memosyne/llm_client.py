@@ -146,7 +146,14 @@ _proxy_key_cache: str | None = None
 def _get_ollama():
     global _ollama_mod
     if _ollama_mod is None:
-        import ollama
+        try:
+            import ollama
+        except ImportError as exc:
+            raise RuntimeError(
+                "Local Ollama models need the ollama client: "
+                'pip install "memosyne[ollama]". Otherwise choose a cloud model '
+                "with --model, or skip enrichment with --no-enrich."
+            ) from exc
         _ollama_mod = ollama
     return _ollama_mod
 

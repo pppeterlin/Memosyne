@@ -56,6 +56,32 @@ class TestFreshLayout(_Home):
             paths.artifact_path("no_such_artifact")
 
 
+class TestEnvFile(_Home):
+    def test_dotenv_is_loaded_when_the_package_is_imported(self):
+        """Modules run directly (python -m memosyne.mcp_server) never go through
+        the CLI, so the package itself has to load <home>/.env."""
+        import subprocess
+        import sys
+        self.touch(".env", "MEMOSYNE_MCP_TOOLS=all\nMEMOSYNE_VAULT_DIR=/tmp/somewhere-else\n")
+        code = ("import os, memosyne; from memosyne import paths; "
+                "print(os.environ.get('MEMOSYNE_MCP_TOOLS'), paths.data_root())")
+        env = {k: v for k, v in os.environ.items() if k not in ("MEMOSYNE_MCP_TOOLS",)}
+        out = subprocess.run([sys.executable, "-c", code], env=env,
+                             capture_output=True, text=True, check=True).stdout.split()
+        self.assertEqual(out[0], "all")
+        self.assertTrue(out[1].endswith("somewhere-else"))
+
+    def test_real_environment_variables_win_over_dotenv(self):
+        import subprocess
+        import sys
+        self.touch(".env", "MEMOSYNE_MCP_TOOLS=all\n")
+        env = dict(os.environ, MEMOSYNE_MCP_TOOLS="core")
+        out = subprocess.run([sys.executable, "-c",
+                              "import os, memosyne; print(os.environ['MEMOSYNE_MCP_TOOLS'])"],
+                             env=env, capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(out, "core")
+
+
 class TestLegacyLayout(_Home):
     """A pre-1.5 checkout keeps working in place after upgrading."""
 

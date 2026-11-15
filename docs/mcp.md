@@ -138,14 +138,14 @@ memosyne rebuild
 stdio is the default transport — it's already authenticated by being on
 the same machine as the user, and is what Claude Desktop / Cursor /
 Claude Code use. For agents that can't speak stdio (cloud agents,
-custom MCP clients, browser extensions), Memosyne v0.5 ships an HTTP
-transport with bearer-token auth.
+custom MCP clients, browser extensions), Memosyne ships an HTTP
+transport with bearer-token auth and per-tool scope checks.
 
 > **Warning.** HTTP transport binds to `127.0.0.1` by default and is
 > intended for local-only use (loopback, Tailscale, ngrok with auth).
 > Never expose the HTTP port on a public interface without an
 > additional reverse-proxy auth layer — bearer tokens alone are not a
-> substitute for TLS + IP allowlisting. OAuth 2.1 is planned for v0.6.
+> substitute for TLS + IP allowlisting.
 
 ### Mint a token
 
@@ -160,9 +160,14 @@ Scopes ladder from least to most privileged:
 
 | Scope | Allowed tools |
 |---|---|
-| `read`  | `search_memory`, `get_profile`, `list_journals`, `read_file`, `get_entity_timeline`, `query_memory_at_time`, `get_memory_health`, `invocation_protocol` |
-| `write` | + `optimize_memory`, all non-revert `aletheia_*` operations |
+| `read`  | `search_memory`, `get_profile`, `get_digest`, `list_journals`, `read_file`, `get_memory_health`, `muse_call`, `memosyne_guide`; labs: `get_entity_timeline`, `query_memory_at_time` |
+| `write` | + `muse_answer`; labs: `optimize_memory`, all non-revert `aletheia_*` operations |
 | `admin` | + `aletheia_revert` — **also marked `local_only` and hidden on HTTP** |
+
+Every `tools/call` is checked against the token's scope before it reaches
+the server; a call above the token's scope is answered with `403`. A tool
+that is not in the scope table needs `admin`. (Before 1.5 a valid token of
+any scope could call any exposed tool.)
 
 `local_only` tools are stripped from the HTTP-exposed tool set
 regardless of scope; admin-scope tokens can only invoke them via

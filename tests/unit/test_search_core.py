@@ -97,6 +97,16 @@ class TestKeywordOnlyInstall(_Vault):
         self.assertFalse((self.art / "chroma_db").exists())
         self.assertEqual(self.paths("herons reservoir"), ["30_Journal/2025/250604.md"])
 
+    def test_dirty_marker_survives_when_a_dense_index_exists_but_cannot_be_updated(self):
+        marker = self.art / "dirty_paths.txt"
+        marker.write_text("30_Journal/2025/250604.md\n", encoding="utf-8")
+        (self.art / "chroma_db").mkdir()
+        self.build()
+        self.assertTrue(marker.exists())          # a later dense build still needs it
+        (self.art / "chroma_db").rmdir()
+        self.build()
+        self.assertFalse(marker.exists())         # nothing to refresh: consumed
+
     def test_reports_and_root_files_are_never_indexed(self):
         self.write("stray.md", "herons reservoir\n")
         self.build()
@@ -168,6 +178,20 @@ class TestProfiles(_Vault):
                 self.paths("herons reservoir")
         self.assertEqual(graph.call_count, 2)
         self.assertEqual(actr.call_count, 2)
+
+    def test_core_profile_ignores_routing_requests(self):
+        route = mock.Mock(side_effect=AssertionError("routing ran under the core profile"))
+        with mock.patch("memosyne.labs.routing.route", route):
+            self.assertTrue(self.paths("herons reservoir", auto_route=True))
+            self.assertTrue(self.paths("herons reservoir", muses=["Clio"], muse_mode="hard"))
+        route.assert_not_called()
+
+    def test_core_profile_does_not_load_the_graph_module(self):
+        import sys
+        with mock.patch.dict(sys.modules):
+            sys.modules.pop("memosyne.labs.graph", None)
+            self.assertTrue(self.paths("herons reservoir"))
+            self.assertNotIn("memosyne.labs.graph", sys.modules)
 
     def test_unknown_profile_falls_back_to_core(self):
         self.assertEqual(R.search_profile("nonsense"), "core")

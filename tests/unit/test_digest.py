@@ -100,6 +100,19 @@ class TestDigest(unittest.TestCase):
         with self.assertRaises(ValueError):
             digest.read("nope", self.vault)
 
+    def test_read_never_serves_a_stale_digest(self):
+        self.assertNotIn("Harbour", digest.read("entities", self.vault))
+        self.write("30_Journal/2025/250901.md",
+                   "---\nentities:\n  locations: [\"Harbour\"]\n---\n\nWalked to the Harbour.\n")
+        self.assertIn("**Harbour** (1) · 2025-09", digest.read("entities", self.vault))
+        self.write("30_Journal/2025/250901.md", "---\ndormant: true\n---\n\nForgotten.\n")
+        self.assertNotIn("Harbour", digest.read("entities", self.vault))
+
+    def test_eight_digit_filenames_are_dated_too(self):
+        self.write("30_Journal/2025/20251103_trip.md", "No frontmatter.\n")
+        by_path = {e.path: e for e in digest.collect(self.vault)}
+        self.assertEqual(by_path["30_Journal/2025/20251103_trip.md"].date, "2025-11-03")
+
     def test_empty_vault(self):
         empty = Path(self._tmp.name) / "empty"
         empty.mkdir()

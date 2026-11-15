@@ -68,7 +68,7 @@ def search_memory(
         top_k: 回傳前幾筆結果（預設 5）
         include_chats: 是否一併搜尋 AI 對話紀錄（預設否）
         return_parent: 若為 True，回傳命中 chunk 所屬的完整 parent section（Small-to-Big）
-        muses: The Invocation — 指定繆思列表（例：["Clio","Calliope"]）
+        muses: 〔僅 full profile〕The Invocation — 指定繆思列表（例：["Clio","Calliope"]）
         auto_route: 自動路由 query 到最相關的 1–2 位繆思（忽略 muses 除非已指定）
         muse_mode: "soft"（命中加權 ×1.3）或 "hard"（只保留命中繆思的記憶）
     """
@@ -78,6 +78,7 @@ def search_memory(
             query, top_k=top_k, return_parent=return_parent,
             muses=muses, auto_route=auto_route, muse_mode=muse_mode,
             include_chats=include_chats,
+            record_access=False,   # recorded once below, as an MCP access
         )
 
         if not results:
@@ -677,8 +678,9 @@ def memosyne_guide(situation: str) -> str:
 
 # ─── Scope tags for HTTP transport ───────────────────────────
 #
-# Each MCP tool is tagged by required scope. Bearer middleware checks the
-# caller's token scope against the tool's required scope before invoking.
+# Each MCP tool is tagged by required scope. BearerScopeMiddleware checks the
+# caller's token scope against the tool's required scope before the call
+# reaches the MCP app; a tool missing from this table needs admin.
 # stdio transport bypasses this check entirely — stdio is already
 # authenticated by virtue of being on the same machine as the user.
 #
@@ -696,7 +698,7 @@ TOOL_SCOPES: dict[str, dict] = {
     "get_entity_timeline":     {"scope": "read"},
     "query_memory_at_time":    {"scope": "read"},
     "get_memory_health":       {"scope": "read"},
-    "invocation_protocol":     {"scope": "read"},
+    "memosyne_guide":          {"scope": "read"},
     # read + telemetry append（比照 search_memory 寫 Chronicle 的先例）
     "muse_call":               {"scope": "read"},
     # write
@@ -711,45 +713,111 @@ TOOL_SCOPES: dict[str, dict] = {
 }
 
 
+def required_scope(tool_name: str) -> str:
+    """Scope a token needs to call a tool. Unlisted tools need admin (fail closed)."""
+    return TOOL_SCOPES.get(tool_name, {}).get("scope", "admin")
+
+
+def denied_tool(payload, token_scope: str) -> str | None:
+    """Name of the first `tools/call` in a JSON-RPC payload the scope may not make."""
+    from memosyne import auth as _auth
+
+    for message in payload if isinstance(payload, list) else [payload]:
+        if not isinstance(message, dict) or message.get("method") != "tools/call":
+            continue
+        params = message.get("params")
+        name = str(params.get("name", "")) if isinstance(params, dict) else ""
+        if not _auth.scope_allows(token_scope, required_scope(name)):
+            return name or "<unnamed tool>"
+    return None
+
+
+class BearerScopeMiddleware:
+    """ASGI middleware: bearer-token authentication plus per-tool scope checks.
+
+    Every HTTP request needs `Authorization: Bearer <token>`. For POSTs the
+    JSON-RPC body is inspected, and a `tools/call` whose tool needs more than
+    the token's scope is rejected with 403 before it reaches the MCP app. The
+    buffered body is replayed downstream unchanged.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        import json
+        from starlette.responses import JSONResponse
+        from memosyne import auth as _auth
+
+        async def reject(status: int, error: str):
+            await JSONResponse({"error": error}, status_code=status)(scope, receive, send)
+
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1")
+                   for k, v in scope.get("headers", [])}
+        header = headers.get("authorization", "")
+        if not header.lower().startswith("bearer "):
+            await reject(401, "missing bearer token")
+            return
+        row = _auth.lookup(header.split(" ", 1)[1].strip())
+        if row is None:
+            await reject(401, "invalid or revoked token")
+            return
+        scope["memosyne_auth"] = row
+
+        if scope.get("method") != "POST":
+            await self.app(scope, receive, send)
+            return
+
+        body, more = b"", True
+        while more:
+            message = await receive()
+            if message["type"] != "http.request":   # client went away
+                return
+            body += message.get("body", b"")
+            more = message.get("more_body", False)
+
+        try:
+            payload = json.loads(body) if body else None
+        except ValueError:
+            payload = None   # not JSON: let the MCP app produce its own error
+        denied = denied_tool(payload, row["scope"]) if payload is not None else None
+        if denied:
+            await reject(403, f"token scope '{row['scope']}' may not call '{denied}' "
+                              f"(needs '{required_scope(denied)}')")
+            return
+
+        replayed = False
+
+        async def replay():
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return await receive()
+
+        await self.app(scope, replay, send)
+
+
 def _serve_http(host: str, port: int) -> None:
     """
     Run MCP over streamable HTTP with bearer-token auth + scope checks.
 
     Listens on host:port (default 127.0.0.1:8000). DNS rebinding
     protection is on by default (FastMCP setting). The Authorization
-    header must be present with `Bearer <token>` for every request;
+    header must be present with `Bearer <token>` for every request, and
+    each tool call is checked against the token's scope (TOOL_SCOPES);
     tokens are managed by `memosyne auth`.
     """
     try:
-        from starlette.middleware.base import BaseHTTPMiddleware
-        from starlette.responses import JSONResponse
+        import starlette  # noqa: F401
     except ImportError as e:
         raise RuntimeError(
             "HTTP transport requires starlette; install it via 'pip install starlette'"
         ) from e
-
-    import memosyne.auth as _auth
-
-    class _BearerAuth(BaseHTTPMiddleware):
-        async def dispatch(self, request, call_next):
-            header = request.headers.get("authorization", "")
-            if not header.lower().startswith("bearer "):
-                return JSONResponse(
-                    {"error": "missing bearer token"}, status_code=401
-                )
-            token = header.split(" ", 1)[1].strip()
-            row = _auth.lookup(token)
-            if row is None:
-                return JSONResponse(
-                    {"error": "invalid or revoked token"}, status_code=401
-                )
-            # Attach auth context for downstream inspection (we don't
-            # currently introspect tool name per-request — FastMCP wraps
-            # tool dispatch inside the streamable HTTP envelope. We
-            # enforce admin/local_only by stripping those tools from the
-            # exposed set when serving HTTP; see filter below.
-            request.scope["memosyne_auth"] = row
-            return await call_next(request)
 
     # Strip local_only tools from the HTTP-exposed set.
     # FastMCP tool registry is mutable; remove anything tagged local_only
@@ -777,7 +845,7 @@ def _serve_http(host: str, port: int) -> None:
 
     # FastMCP.streamable_http_app() returns a Starlette app we can wrap.
     app = mcp.streamable_http_app()
-    app.add_middleware(_BearerAuth)
+    app.add_middleware(BearerScopeMiddleware)
 
     import uvicorn
     print(f"🜍 The Open Threshold — MCP HTTP on http://{host}:{port}/mcp")

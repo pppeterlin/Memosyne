@@ -70,7 +70,7 @@ def run_flavor(query: str, top_k: int, full: bool) -> list[dict]:
     if full:
         return search(
             query, top_k=top_k,
-            auto_route=True, muse_mode="soft",
+            profile="full", auto_route=True, muse_mode="soft",
             return_parent=True,
         )
     else:

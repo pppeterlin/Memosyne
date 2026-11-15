@@ -234,10 +234,18 @@ def _classify_against_dst(spring_content: str, dst: Path) -> tuple[str, str, str
     return "diverged", spring_hash, dst_hash
 
 
+def _display_path(path: Path) -> Path:
+    """Path relative to home when it lives there, else as given."""
+    try:
+        return path.relative_to(ROOT)
+    except ValueError:
+        return path
+
+
 def _warn_conflict(spring_path: Path, dst: Path, spring_hash: str, dst_hash: str) -> None:
     """Phase 0: surface a divergence loudly so the user can intervene."""
     print(f"    ⚠  Conflict: {spring_path.name} differs from the vault copy.")
-    print(f"       vault path:  {dst.relative_to(ROOT) if dst.is_absolute() else dst}")
+    print(f"       vault path:  {_display_path(dst)}")
     print(f"       spring hash: {spring_hash[:23]}…")
     print(f"       vault hash:  {dst_hash[:23]}…")
     print(f"       The spring source is NOT archived — review and decide:")

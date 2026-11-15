@@ -711,7 +711,7 @@ def patrol_all(model: str, dry_run: bool = False):
             json.dumps(report_data, ensure_ascii=False, indent=2),
             encoding="utf-8"
         )
-        print(f"  Report saved: {report_path.relative_to(BASE)}")
+        print(f"  Report saved: {report_path}")
         print(f"\n  To apply corrections:")
         print(f"    memosyne audit --apply-report {report_path.name}")
     else:

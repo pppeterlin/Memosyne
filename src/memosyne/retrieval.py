@@ -810,7 +810,8 @@ def build_index(rebuild: bool = False):
     if dense_available():
         _build_dense_index(all_chunks, rebuild)
     else:
-        _consume_dirty_paths()   # nothing to refresh; BM25 is rebuilt below
+        if not CHROMA_DIR.exists():
+            _consume_dirty_paths()   # no dense index to refresh; BM25 is rebuilt below
         print("[VECTOR] search extra not installed — building the keyword index only.")
         print('         Add dense retrieval with: pip install "memosyne[search]"')
 
@@ -1273,29 +1274,31 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
     # PPR 加成上限。RRF 分數範圍約 [0, 0.033]（k=60，雙路理論上限 2/61），
     # 故 alpha 必須與之同量級；否則 PPR 會直接壓過 RRF。
     PPR_ALPHA = 0.015
-    try:
-        from memosyne.labs.graph import spreading_activation, TAPESTRY_DB
-        if full and _walk == "deep" and TAPESTRY_DB.exists() and results:
-            seed_paths = [r["path"] for r in results[:5]]
-            query_entities = [
-                w for w in re.findall(r'[\u4e00-\u9fff]{2,}|[a-zA-Z][\w-]+', query)
-                if len(w) >= 2
-            ]
-            ppr_results = spreading_activation(
-                seed_paths, top_k=FETCH, seed_entities=query_entities
-            )
-            if ppr_results:
-                ppr_by_path = {p: s for p, s in ppr_results}
-                max_ppr = max(ppr_by_path.values()) if ppr_by_path else 0.0
-                if max_ppr > 0:
-                    # 正規化 PPR 分數到 [0, 1]，再乘 alpha 當作加成
-                    for r in results:
-                        ppr_s = ppr_by_path.get(r["path"], 0.0)
-                        if ppr_s > 0:
-                            r["score"] = round(r["score"] + PPR_ALPHA * (ppr_s / max_ppr), 4)
-                    results.sort(key=lambda x: x["score"], reverse=True)
-    except ImportError:
-        pass
+    spreading_activation = None
+    if full and _walk == "deep":
+        try:
+            from memosyne.labs.graph import spreading_activation, TAPESTRY_DB
+        except ImportError:
+            pass
+    if spreading_activation is not None and TAPESTRY_DB.exists() and results:
+        seed_paths = [r["path"] for r in results[:5]]
+        query_entities = [
+            w for w in re.findall(r'[\u4e00-\u9fff]{2,}|[a-zA-Z][\w-]+', query)
+            if len(w) >= 2
+        ]
+        ppr_results = spreading_activation(
+            seed_paths, top_k=FETCH, seed_entities=query_entities
+        )
+        if ppr_results:
+            ppr_by_path = {p: s for p, s in ppr_results}
+            max_ppr = max(ppr_by_path.values()) if ppr_by_path else 0.0
+            if max_ppr > 0:
+                # 正規化 PPR 分數到 [0, 1]，再乘 alpha 當作加成
+                for r in results:
+                    ppr_s = ppr_by_path.get(r["path"], 0.0)
+                    if ppr_s > 0:
+                        r["score"] = round(r["score"] + PPR_ALPHA * (ppr_s / max_ppr), 4)
+                results.sort(key=lambda x: x["score"], reverse=True)
 
     # ── Two-pass walk (fast graph contribution) ──────────────────
     # Same additive-bonus model as PPR so they're swappable: only PPR or
@@ -1351,9 +1354,11 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
 
     # ── The Invocation — 繆思路由器 ──
     # soft: 命中繆思領域的記憶 score × boost；hard: 過濾掉非命中
-    active_muses: list[str] = list(muses) if muses else []
+    # Routing is a labs stage: under the core profile `muses` / `auto_route`
+    # are ignored.
+    active_muses: list[str] = list(muses) if (muses and full) else []
     muse_scores: dict[str, float] = {}
-    if auto_route and not active_muses:
+    if full and auto_route and not active_muses:
         try:
             from memosyne.labs.routing import route as _muse_route
             routed = _muse_route(query, top_k=route_top_k, threshold=auto_route_threshold)
@@ -1444,7 +1449,7 @@ def search(query: str, top_k: int = 5, doc_type: str = "",
     # ── The Augury Replay — capture query for regression replay（v0.5）──
     # opt-in；MEMOSYNE_CAPTURE_QUERIES=1 才寫。
     # PII scrub + retrieval slug 列表 → NDJSON append-only。
-    if results:
+    if results and _flag("MEMOSYNE_CAPTURE_QUERIES", "0"):
         try:
             from memosyne.labs.query_log import record_query as _record_q
             _record_q(

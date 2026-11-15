@@ -67,6 +67,16 @@ Upgrading an existing checkout: [docs/migration_v1.5.md](docs/migration_v1.5.md)
   (guarded against a mis-pointed vault).
 - **`read_file` path check** compared string prefixes and tested existence
   before the sandbox; it now resolves first and uses a real containment test.
+- **HTTP token scopes were never enforced per tool** — any valid token could
+  call any exposed tool. Each `tools/call` is now checked against the token's
+  scope (403 otherwise); unlisted tools need `admin`.
+- **`<home>/.env` was only loaded on some code paths**, so the MCP server and
+  modules run directly ignored path and feature settings placed there. It is
+  now loaded when the package is imported.
+- MCP `search_memory` recorded every access twice.
+- The ingest conflict warning crashed when the vault lived outside the
+  project directory; `memosyne audit --patrol` crashed the same way when the
+  artifact directory did.
 - **Unit tests wrote into the real vault's artifact folder.** Tests now run
   against an empty temporary home.
 - **Graph search ranked tied memories in arbitrary order**, so the full

@@ -77,5 +77,14 @@ class TestOpenAICompatiblePath(unittest.TestCase):
         self.assertEqual(llm_client.active_provider("proxy:anything"), "proxy")
 
 
+class TestOllamaIsOptional(unittest.TestCase):
+    def test_missing_client_explains_how_to_get_it(self):
+        import sys
+        with mock.patch.dict(sys.modules, {"ollama": None}), \
+             mock.patch.object(llm_client, "_ollama_mod", None):
+            with self.assertRaisesRegex(RuntimeError, r"memosyne\[ollama\]"):
+                llm_client._get_ollama()
+
+
 if __name__ == "__main__":
     unittest.main()
